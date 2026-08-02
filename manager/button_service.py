@@ -26,8 +26,8 @@ class ButtonService:
     NAVIGATION_CODE = 2    # KEY_1
     SELECT_CODE = 28       # KEY_ENTER
 
-    LONG_PRESS_SECONDS = 1.2
-    VERY_LONG_PRESS_SECONDS = 2.4
+    LONG_PRESS_SECONDS = 0.9
+    VERY_LONG_PRESS_SECONDS = 3.6
     DEBOUNCE_SECONDS = 0.08
 
     def __init__(

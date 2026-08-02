@@ -373,6 +373,11 @@ handlers whenever possible.
 Extra-long hold remains controlled by Rocky Runtime even when an application
 receives the event.
 
+Current thresholds:
+- `short_press`: under `0.9s`
+- `long_press`: about `0.9s+`
+- `very_long_press`: about `3.6s+`
+
 Applications must not disable the universal Home behavior.
 
 ---
