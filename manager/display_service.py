@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import socket
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
 from zero2w_epaper import Display
+
+DISPLAY_TIMEZONE = ZoneInfo("America/Chicago")
 
 
 def show_idle() -> None:
@@ -13,7 +16,7 @@ def show_idle() -> None:
     font = ImageFont.load_default()
 
     hostname = socket.gethostname()
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+    current_time = datetime.now(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M")
 
     draw.rectangle((0, 0, 249, 121), outline=0)
     draw.text((8, 8), "ZERO2W MANAGER", font=font, fill=0)

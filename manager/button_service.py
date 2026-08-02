@@ -43,6 +43,19 @@ class ButtonService:
         self.press_times: dict[int, float] = {}
         self.last_release: dict[int, float] = {}
 
+    def _event_timestamp(self, event) -> float:
+        sec = getattr(event, "sec", None)
+        usec = getattr(event, "usec", None)
+        if sec is None or usec is None:
+            stamp = getattr(event, "timestamp", None)
+            if callable(stamp):
+                try:
+                    return float(stamp())
+                except Exception:
+                    return time.monotonic()
+            return time.monotonic()
+        return float(sec) + (float(usec) / 1_000_000.0)
+
     def find_device(self) -> InputDevice:
         for path in list_devices():
             device = InputDevice(path)
@@ -85,9 +98,11 @@ class ButtonService:
             value,
         )
 
+        event_time = self._event_timestamp(event)
+
         # value 1 = press, 0 = release, 2 = autorepeat
         if value == 1:
-            self.press_times[code] = time.monotonic()
+            self.press_times[code] = event_time
             return
 
         if value == 2:
@@ -96,7 +111,7 @@ class ButtonService:
         if value != 0:
             return
 
-        now = time.monotonic()
+        now = event_time
         previous_release = self.last_release.get(code, 0.0)
 
         if now - previous_release < self.DEBOUNCE_SECONDS:
