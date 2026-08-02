@@ -1,0 +1,148 @@
+{
+  "diagnostic": {
+    "command": [
+      "/opt/zero2w-manager/venv/bin/python3",
+      "-m",
+      "apps.diagnostic"
+    ],
+    "cwd": "/opt/zero2w-manager",
+    "description": "System and hardware status",
+    "environment": {
+      "PYTHONPATH": "/opt/zero2w-manager"
+    },
+    "menu_order": 20,
+    "menu_visible": true,
+    "name": "Diagnostics",
+    "type": "application",
+    "working_directory": "/opt/zero2w-manager"
+  },
+  "idle": {
+    "background_allowed": false,
+    "command": null,
+    "description": "Manager idle state",
+    "display_owner": true,
+    "environment": {},
+    "menu_visible": false,
+    "name": "Idle",
+    "network_owner": false,
+    "working_directory": null
+  },
+  "pikvm": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Remote KVM web interface",
+    "display_owner": false,
+    "environment": {},
+    "installed_path": "/opt/pikvm-lite/app.py",
+    "menu_order": 50,
+    "menu_visible": true,
+    "name": "PiKVM",
+    "network_owner": false,
+    "service": "pikvm-lite.service",
+    "systemd_service": "pikvm-lite.service",
+    "type": "background_service",
+    "url": "http://127.0.0.1:8080",
+    "working_directory": "/opt/pikvm-lite"
+  },
+  "pwnagotchi": {
+    "background_allowed": false,
+    "command": null,
+    "description": "Wireless learning companion",
+    "display_owner": true,
+    "environment": {},
+    "menu_order": 20,
+    "menu_visible": true,
+    "name": "Pwnagotchi",
+    "network_owner": true,
+    "working_directory": "/opt/pwnagotchi/app"
+  },
+  "ragnar": {
+    "background_allowed": false,
+    "command": [
+      "/opt/ragnar/venv/bin/python3",
+      "/opt/ragnar/app/Ragnar.py"
+    ],
+    "description": "Network discovery and analysis",
+    "display_owner": true,
+    "environment": {
+      "HOME": "/opt/ragnar",
+      "PYTHONPATH": "/opt/ragnar/app",
+      "PYTHONUNBUFFERED": "1"
+    },
+    "menu_order": 10,
+    "menu_visible": true,
+    "name": "Ragnar",
+    "network_owner": true,
+    "working_directory": "/opt/ragnar/app"
+  },
+  "reader": {
+    "command": [
+      "/opt/zero2w-manager/venv/bin/python3",
+      "-m",
+      "apps.reader"
+    ],
+    "controls": {
+      "primary": "next page",
+      "secondary": "previous page"
+    },
+    "cwd": "/opt/zero2w-manager",
+    "description": "Read local text documents",
+    "environment": {
+      "PYTHONPATH": "/opt/zero2w-manager"
+    },
+    "menu_order": 30,
+    "menu_visible": true,
+    "name": "Reader",
+    "type": "application",
+    "working_directory": "/opt/zero2w-manager"
+  },
+  "tesserae": {
+    "background_allowed": false,
+    "command": [
+      "/opt/zero2w-manager/venv/bin/python3",
+      "-m",
+      "apps.tesserae"
+    ],
+    "description": "Tesserae e-paper dashboard client",
+    "display_owner": true,
+    "environment": {
+      "PYTHONPATH": "/opt/zero2w-manager",
+      "PYTHONUNBUFFERED": "1"
+    },
+    "menu_order": 40,
+    "menu_visible": true,
+    "name": "Tesserae",
+    "network_owner": false,
+    "working_directory": "/opt/zero2w-manager"
+  },
+  "pihole": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Network-wide ad blocking and DNS",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 45,
+    "menu_visible": true,
+    "name": "Pi-hole",
+    "network_owner": true,
+    "type": "background_service",
+    "url": "http://192.168.1.199/admin",
+    "systemd_service": null,
+    "docker_container": "rocky-pihole"
+  },
+  "3d_printer": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Klipper + Mainsail 3D printer control",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 46,
+    "menu_visible": true,
+    "name": "3D Printer",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:84/",
+    "systemd_service": "klipper",
+    "docker_container": null
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "background_allowed": false,
+  "command": [
+    "/opt/zero2w-manager/venv/bin/python3",
+    "${PLUGIN_DIR}/main.py"
+  ],
+  "description": "Select Rocky runtime modes from the e-paper device buttons",
+  "display_owner": true,
+  "environment": {
+    "PYTHONPATH": "/opt/zero2w-manager",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "id": "mode-selector",
+  "menu_order": 15,
+  "menu_visible": true,
+  "name": "Modes",
+  "network_owner": false,
+  "type": "application",
+  "working_directory": "${PLUGIN_DIR}"
+}

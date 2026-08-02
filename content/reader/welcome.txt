@@ -1,0 +1,13 @@
+Welcome to the Zero2W Reader.
+
+This application demonstrates reusable application controls through the launcher.
+
+Press KEY_1 to move to the next page.
+
+Short-press KEY_ENTER to move to the previous page.
+
+Hold KEY_ENTER to close Reader and return to the application menu.
+
+Reader progress is saved automatically, so the same page will reopen the next time Reader starts.
+
+Additional plain-text documents can be copied into the content/reader directory.

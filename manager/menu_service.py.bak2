@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import json
+import textwrap
+from pathlib import Path
+from typing import Any
+
+from PIL import Image, ImageDraw, ImageFont
+from zero2w_epaper import Display
+
+
+CONFIG_FILE = Path("/opt/zero2w-manager/config/services.json")
+
+
+class MenuService:
+    WIDTH = 250
+    HEIGHT = 122
+    VISIBLE_ROWS = 4
+
+    def __init__(self) -> None:
+        self.services = self._load_services()
+        self.items = self._build_menu()
+        self.selected_index = 0
+
+    def _load_services(self) -> dict[str, dict[str, Any]]:
+        return json.loads(CONFIG_FILE.read_text())
+
+    def _build_menu(self) -> list[dict[str, Any]]:
+        items = []
+
+        for service_id, service in self.services.items():
+            if not service.get("menu_visible", False):
+                continue
+
+            items.append({
+                "id": service_id,
+                "name": service.get("name", service_id.title()),
+                "description": service.get("description", ""),
+                "configured": bool(service.get("command")),
+                "order": service.get("menu_order", 999),
+            })
+
+        return sorted(items, key=lambda item: (item["order"], item["name"]))
+
+    @property
+    def selected(self) -> dict[str, Any]:
+        if not self.items:
+            raise RuntimeError("No menu applications are configured")
+
+        return self.items[self.selected_index]
+
+    def next(self) -> dict[str, Any]:
+        if self.items:
+            self.selected_index = (self.selected_index + 1) % len(self.items)
+
+        self.render()
+        return self.selected
+
+    def previous(self) -> dict[str, Any]:
+        if self.items:
+            self.selected_index = (self.selected_index - 1) % len(self.items)
+
+        self.render()
+        return self.selected
+
+    def render(self, message: str | None = None) -> None:
+        image = Image.new("1", (self.WIDTH, self.HEIGHT), 255)
+        draw = ImageDraw.Draw(image)
+        font = ImageFont.load_default()
+
+        draw.rectangle((0, 0, self.WIDTH - 1, self.HEIGHT - 1), outline=0)
+        draw.text((7, 5), "ZERO2W APPS", font=font, fill=0)
+        draw.line((6, 18, self.WIDTH - 7, 18), fill=0)
+
+        if not self.items:
+            draw.text((8, 36), "No applications configured", font=font, fill=0)
+        else:
+            window_start = max(
+                0,
+                min(
+                    self.selected_index - 1,
+                    max(0, len(self.items) - self.VISIBLE_ROWS),
+                ),
+            )
+
+            visible = self.items[
+                window_start:window_start + self.VISIBLE_ROWS
+            ]
+
+            y = 26
+
+            for offset, item in enumerate(visible):
+                absolute_index = window_start + offset
+                selected = absolute_index == self.selected_index
+
+                marker = ">" if selected else " "
+                installed = "" if item["configured"] else " [--]"
+                label = f"{marker} {item['name']}{installed}"
+
+                if selected:
+                    draw.rectangle(
+                        (5, y - 2, self.WIDTH - 6, y + 10),
+                        outline=0,
+                    )
+
+                draw.text((9, y), label[:37], font=font, fill=0)
+                y += 16
+
+            selected_item = self.selected
+            footer = message or selected_item["description"]
+
+            wrapped = textwrap.wrap(footer, width=38)
+            footer_text = wrapped[0] if wrapped else ""
+
+            draw.line((6, 94, self.WIDTH - 7, 94), fill=0)
+            draw.text((8, 101), footer_text[:38], font=font, fill=0)
+
+        with Display() as display:
+            display.show(image)
