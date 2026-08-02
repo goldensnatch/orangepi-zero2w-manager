@@ -812,7 +812,7 @@ class ManagerDaemon:
             return False
         try:
             result = subprocess.run(
-                ["systemctl", "kill", "--signal", sig, "--kill-whom=main", unit],
+                ["systemctl", "kill", "--signal", sig, "--kill-whom=all", unit],
                 capture_output=True,
                 text=True,
                 check=False,
