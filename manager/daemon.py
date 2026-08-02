@@ -24,6 +24,7 @@ from manager.runtime.context import RuntimeContext
 
 
 LOGGER = logging.getLogger("zero2w-manager")
+RESIDENT_DISPLAY_SETTLE_SECONDS = 1.35
 PROXY_TOKEN_SECRET_PATH = Path('/opt/zero2w-manager/runtime/config/proxy-token-secret')
 PUBLIC_BASE_URL = os.environ.get('ROCKY_PUBLIC_BASE_URL', '').strip()
 ROCKY_WEB_PORT = int(os.environ.get('ROCKY_WEB_PORT', '8090'))
@@ -76,6 +77,7 @@ class ManagerDaemon:
 
         self.menu_visible = True
         self.active_app_id: str | None = None
+        self._active_display_ready_at = 0.0
 
         # Used to prevent the application exit callback from drawing
         # the menu while a deliberate long-press stop is still running.
@@ -88,6 +90,37 @@ class ManagerDaemon:
         self._clear_isp_prep_request()
         self._clear_hardware_prep_state()
         self._publish_reconciled_infrastructure_state(force_refresh=True)
+
+    def _mark_active_display_settling(
+        self,
+        settle_seconds: float = RESIDENT_DISPLAY_SETTLE_SECONDS,
+    ) -> None:
+        self._active_display_ready_at = (
+            time.monotonic() + max(0.0, float(settle_seconds))
+        )
+
+    def _clear_active_display_settling(self) -> None:
+        self._active_display_ready_at = 0.0
+
+    def _active_display_is_settling(self) -> bool:
+        return (
+            not self.menu_visible
+            and bool(self.active_app_id)
+            and time.monotonic() < self._active_display_ready_at
+        )
+
+    def _active_display_accepts_controls(self) -> bool:
+        if self._active_display_is_settling():
+            return False
+        if self.menu_visible or not self.active_app_id:
+            return False
+
+        try:
+            service = self._service_configuration(self.active_app_id)
+        except Exception:
+            return False
+
+        return self._service_is_foreground(service)
 
     def _infrastructure_state(
         self,
@@ -945,7 +978,7 @@ class ManagerDaemon:
         return target.strip()
 
     def _should_short_press_swap_active_display(self) -> bool:
-        if self.menu_visible or not self.active_app_id:
+        if not self._active_display_accepts_controls():
             return False
 
         try:
@@ -1032,6 +1065,7 @@ class ManagerDaemon:
 
             self.menu_visible = True
             self.active_app_id = None
+            self._clear_active_display_settling()
 
             selected = self.menu.selected
             selected_id = (
@@ -1111,6 +1145,17 @@ class ManagerDaemon:
         event: ButtonEvent,
     ) -> None:
         """KEY_1 tap moves up; hold selects; extra hold stops."""
+
+        if (
+            not self.menu_visible
+            and self._active_display_is_settling()
+            and event.held_seconds < ButtonService.VERY_LONG_PRESS_SECONDS
+        ):
+            self.log.info(
+                "Ignoring navigation while %s settles onto the display",
+                self.active_app_id,
+            )
+            return
 
         if self._app_is_running() or not self.menu_visible:
             if (
@@ -1296,6 +1341,7 @@ class ManagerDaemon:
         with self._state_lock:
             self.menu_visible = False
             self.active_app_id = None
+            self._clear_active_display_settling()
 
         payload = {
             "entered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1412,7 +1458,7 @@ class ManagerDaemon:
             return False
 
     def _park_active_display_to_menu(self) -> bool:
-        if self.menu_visible or not self.active_app_id:
+        if not self._active_display_accepts_controls():
             return False
 
         try:
@@ -1463,6 +1509,7 @@ class ManagerDaemon:
 
             with self._state_lock:
                 self.active_app_id = app_id
+                self._mark_active_display_settling()
 
             owner = "systemd" if self._is_systemd_display_service(service) else "process"
             self.state_publisher.set_foreground_application(
@@ -1664,6 +1711,7 @@ class ManagerDaemon:
 
         with self._state_lock:
             self.active_app_id = app_id
+            self._mark_active_display_settling()
 
         self.log.info(
             "Activated systemd display service: %s",
@@ -1780,6 +1828,7 @@ class ManagerDaemon:
 
         with self._state_lock:
             self.active_app_id = app_id
+            self._mark_active_display_settling()
 
         self.log.info(
             "Started %s with PID %s",
@@ -1816,6 +1865,17 @@ class ManagerDaemon:
         event: ButtonEvent,
     ) -> None:
         """KEY_ENTER tap moves down; hold selects; extra hold stops."""
+
+        if (
+            not self.menu_visible
+            and self._active_display_is_settling()
+            and event.held_seconds < ButtonService.VERY_LONG_PRESS_SECONDS
+        ):
+            self.log.info(
+                "Ignoring select while %s settles onto the display",
+                self.active_app_id,
+            )
+            return
 
         self.log.info(
             "Select button: %s held %.2fs",
