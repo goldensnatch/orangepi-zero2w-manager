@@ -518,12 +518,15 @@ class ManagerDaemon:
             return False
         if self._is_systemd_display_service(service):
             return False
+        service_type = str(service.get('type') or '').strip()
+        if service_type != 'background_service':
+            return False
         app_id = service.get('id')
         if app_id and self._resolve_qr_target(str(app_id)):
             return True
         if not service.get('url'):
             return False
-        return bool(service.get('systemd_service') or service.get('type') == 'background_service')
+        return bool(service.get('systemd_service') or service_type == 'background_service')
 
     def _resolve_qr_target(self, app_id: str) -> str | None:
         try:
