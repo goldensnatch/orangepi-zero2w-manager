@@ -990,10 +990,15 @@ class ManagerDaemon:
         if self._is_systemd_display_service(service):
             freeze_units = service.get("freeze_services")
             if isinstance(freeze_units, list) and freeze_units:
-                return self._run_systemctl(
+                if self._run_systemctl(
                     "freeze",
                     [str(unit) for unit in freeze_units],
                     timeout=15,
+                ):
+                    return True
+                self.log.warning(
+                    "Freeze unavailable for %s, falling back to pause strategy",
+                    str(service.get("id") or service.get("systemd_service") or "service"),
                 )
 
             pause_units = service.get("pause_services")
@@ -1024,10 +1029,15 @@ class ManagerDaemon:
         if self._is_systemd_display_service(service):
             thaw_units = service.get("thaw_services")
             if isinstance(thaw_units, list) and thaw_units:
-                return self._run_systemctl(
+                if self._run_systemctl(
                     "thaw",
                     [str(unit) for unit in thaw_units],
                     timeout=15,
+                ):
+                    return True
+                self.log.warning(
+                    "Thaw unavailable for %s, falling back to resume strategy",
+                    str(service.get("id") or service.get("systemd_service") or "service"),
                 )
 
             resume_units = service.get("resume_services")
