@@ -454,7 +454,7 @@ class ManagerDaemon:
     def _await_systemd_service_state(
         self,
         unit: str,
-        expected: str,
+        expected: str | list[str] | tuple[str, ...] | set[str],
         *,
         timeout_seconds: float = 8.0,
     ) -> bool:
@@ -463,25 +463,34 @@ class ManagerDaemon:
             return False
 
         deadline = time.monotonic() + max(0.5, float(timeout_seconds))
-        expected = expected.strip().lower()
+        if isinstance(expected, str):
+            expected_states = {expected.strip().lower()}
+        else:
+            expected_states = {
+                str(value).strip().lower()
+                for value in expected
+                if str(value).strip()
+            }
+        if not expected_states:
+            return False
 
         while time.monotonic() < deadline:
             status = self._mode_service_status(unit).strip().lower()
-            if status == expected:
+            if status in expected_states:
                 return True
-            if expected == "inactive" and status in {"inactive", "failed", "unknown"}:
+            if "inactive" in expected_states and status in {"inactive", "failed", "unknown"}:
                 return True
             time.sleep(0.15)
 
         status = self._mode_service_status(unit).strip().lower()
-        if status == expected:
+        if status in expected_states:
             return True
-        if expected == "inactive" and status in {"inactive", "failed", "unknown"}:
+        if "inactive" in expected_states and status in {"inactive", "failed", "unknown"}:
             return True
         self.log.warning(
             "Timed out waiting for %s to become %s (last=%s)",
             unit,
-            expected,
+            ",".join(sorted(expected_states)),
             status,
         )
         return False
@@ -981,13 +990,19 @@ class ManagerDaemon:
         if self._is_systemd_display_service(service):
             pause_units = service.get("pause_services")
             if isinstance(pause_units, list) and pause_units:
+                pause_timeout = float(service.get("pause_timeout_seconds") or 8.0)
                 if not self._run_systemctl(
                     "stop",
                     [str(unit) for unit in pause_units],
+                    timeout=max(10, int(pause_timeout) + 2),
                 ):
                     return False
                 primary = str(service.get("systemd_service") or "").strip()
-                return self._await_systemd_service_state(primary, "inactive")
+                return self._await_systemd_service_state(
+                    primary,
+                    "inactive",
+                    timeout_seconds=pause_timeout,
+                )
 
             unit = str(service.get("systemd_service") or "").strip()
             return self._kill_systemd_unit_signal(unit, "STOP")
@@ -1001,13 +1016,22 @@ class ManagerDaemon:
         if self._is_systemd_display_service(service):
             resume_units = service.get("resume_services")
             if isinstance(resume_units, list) and resume_units:
+                resume_timeout = float(service.get("resume_timeout_seconds") or 8.0)
+                resume_states = service.get("resume_accept_states")
+                if not isinstance(resume_states, list) or not resume_states:
+                    resume_states = ["active"]
                 if not self._run_systemctl(
                     "start",
                     [str(unit) for unit in resume_units],
+                    timeout=max(10, int(resume_timeout) + 2),
                 ):
                     return False
                 primary = str(service.get("systemd_service") or "").strip()
-                return self._await_systemd_service_state(primary, "active")
+                return self._await_systemd_service_state(
+                    primary,
+                    resume_states,
+                    timeout_seconds=resume_timeout,
+                )
 
             unit = str(service.get("systemd_service") or "").strip()
             return self._kill_systemd_unit_signal(unit, "CONT")
@@ -1578,6 +1602,10 @@ class ManagerDaemon:
             self.show_menu(f"{app_name}: PAUSE FAILED")
             return True
 
+        self._quiesce_all_resident_displays(
+            except_app_id=app_id,
+        )
+
         time.sleep(0.2)
         self.show_menu(
             f"{app_name}: MENU",
@@ -1606,6 +1634,34 @@ class ManagerDaemon:
                 "Quiescing competing resident display %s before foregrounding %s",
                 app_id,
                 target_app_id,
+            )
+            self._pause_resident_display_service(service)
+
+    def _quiesce_all_resident_displays(
+        self,
+        *,
+        except_app_id: str | None = None,
+        suppress_exit_callbacks: bool = True,
+    ) -> None:
+        for app_id in self.menu.services:
+            if except_app_id and str(app_id) == str(except_app_id):
+                continue
+            try:
+                service = self._service_configuration(str(app_id))
+            except Exception:
+                continue
+
+            if not self._is_resident_display_app(service):
+                continue
+            if not self._service_is_running(service):
+                continue
+
+            if suppress_exit_callbacks:
+                self._suppress_resident_exit_callback(str(app_id))
+
+            self.log.info(
+                "Quiescing resident display %s for launcher ownership",
+                app_id,
             )
             self._pause_resident_display_service(service)
 
