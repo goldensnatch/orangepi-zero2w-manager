@@ -78,6 +78,7 @@ class ManagerDaemon:
         self.menu_visible = True
         self.active_app_id: str | None = None
         self._active_display_ready_at = 0.0
+        self._suppressed_resident_exit_until: dict[str, float] = {}
 
         # Used to prevent the application exit callback from drawing
         # the menu while a deliberate long-press stop is still running.
@@ -101,6 +102,37 @@ class ManagerDaemon:
 
     def _clear_active_display_settling(self) -> None:
         self._active_display_ready_at = 0.0
+
+    def _suppress_resident_exit_callback(
+        self,
+        app_id: str | None,
+        *,
+        seconds: float = 4.0,
+    ) -> None:
+        if not app_id:
+            return
+        self._suppressed_resident_exit_until[str(app_id)] = (
+            time.monotonic() + max(0.5, float(seconds))
+        )
+
+    def _resident_exit_callback_suppressed(
+        self,
+        app_id: str | None,
+    ) -> bool:
+        if not app_id:
+            return False
+
+        key = str(app_id)
+        deadline = self._suppressed_resident_exit_until.get(key)
+        if deadline is None:
+            return False
+
+        now = time.monotonic()
+        if now < deadline:
+            return True
+
+        self._suppressed_resident_exit_until.pop(key, None)
+        return False
 
     def _active_display_is_settling(self) -> bool:
         return (
@@ -1539,7 +1571,9 @@ class ManagerDaemon:
         if not service:
             return False
 
+        app_id = str(service.get("id") or self.active_app_id or "")
         app_name = str(service.get("name") or self.active_app_id)
+        self._suppress_resident_exit_callback(app_id)
         if not self._pause_resident_display_service(service):
             self.show_menu(f"{app_name}: PAUSE FAILED")
             return True
@@ -1860,6 +1894,7 @@ class ManagerDaemon:
             source_service = None
 
         if source_service and self._is_resident_display_app(source_service):
+            self._suppress_resident_exit_callback(source_id)
             if not self._pause_resident_display_service(source_service):
                 self.show_menu(f"Switch failed: {source_id}")
                 return True
@@ -2204,6 +2239,13 @@ class ManagerDaemon:
             return_code,
             stopped_by_manager,
         )
+
+        if self._resident_exit_callback_suppressed(str(app_id)):
+            self.log.info(
+                "Suppressing launcher restoration for intentional resident-display transition of %s",
+                app_id,
+            )
+            return
 
         with self._state_lock:
             if not self.running:
