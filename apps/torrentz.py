@@ -221,10 +221,10 @@ class TorrentzApp(RockyButtonApp):
             tokenized = str(live.get("tokenized_proxy_url") or "").strip()
             if tokenized:
                 return tokenized
-            public = str(live.get("public_url") or "").strip()
+            public = str(live.get("url") or live.get("public_url") or "").strip()
             if public:
                 return public
-        return publicize_service_url("http://127.0.0.1:8080/")
+        return publicize_service_url("http://127.0.0.1:8088/")
 
     def _refresh_qr_cache(self) -> None:
         target = self._qbt_proxy_url()

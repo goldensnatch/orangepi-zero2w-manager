@@ -931,6 +931,7 @@ class ManagerDaemon:
         live: dict[str, Any] = {}
         cache = self._load_web_service_cache()
         cache_changed = False
+        transfer_state = self.transfer_manager.state_snapshot()
         mode_id = str((effective_mode or {}).get('mode_id') or '').strip().lower()
         network_policy = (
             effective_mode.get('network', {})
@@ -975,6 +976,31 @@ class ManagerDaemon:
                 if cached != new_cached:
                     cache[str(app_id)] = new_cached
                     cache_changed = True
+
+        downloader = (
+            transfer_state.get("downloader", {})
+            if isinstance(transfer_state, dict)
+            else {}
+        )
+        web_ui_url = downloader.get("web_ui_url") if isinstance(downloader, dict) else None
+        if isinstance(web_ui_url, str) and web_ui_url:
+            public_url = self._publicize_service_url(web_ui_url)
+            tokenized_proxy_url = self._tokenized_proxy_url("transfer-stack")
+            live["transfer-stack"] = {
+                "available": True,
+                "active": bool(transfer_state.get("healthy")),
+                "url": public_url,
+                "tokenized_proxy_url": tokenized_proxy_url,
+            }
+            cached = cache.get("transfer-stack", {}) if isinstance(cache.get("transfer-stack"), dict) else {}
+            new_cached = {
+                "last_url": public_url,
+                "last_tokenized_proxy_url": tokenized_proxy_url,
+                "last_seen_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            }
+            if cached != new_cached:
+                cache["transfer-stack"] = new_cached
+                cache_changed = True
         if cache_changed:
             self._save_web_service_cache(cache)
         return {'web_services': live, 'web_service_cache': cache}
