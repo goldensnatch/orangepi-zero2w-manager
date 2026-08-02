@@ -33,6 +33,7 @@ CURRENT_MODE_REQUEST_PATH = Path('/opt/zero2w-manager/runtime/config/current-mod
 WEB_SERVICE_CACHE_PATH = Path('/opt/zero2w-manager/runtime/config/web-service-cache.json')
 ISP_PREP_REQUEST_PATH = Path('/run/rocky/isp-prep-request.json')
 HARDWARE_PREP_STATE_PATH = Path('/run/rocky/hardware-prep-state.json')
+MANAGED_PROCESS_STATE_PATH = Path('/opt/zero2w-manager/runtime/state.json')
 DEFAULT_MODE_CATALOG = {'version': 1, 'modes': [{'mode_id': 'safe', 'label': 'Safe Mode', 'description': 'Minimal known-good Rocky state.', 'category': 'baseline', 'network': {'profile': 'lan_only', 'vpn_required': False, 'vpn_provider': 'none', 'mobile_exit_node': False, 'allow_lan_admin': True, 'allow_wireguard_admin': True, 'allow_public_admin': False, 'firewall_policy': 'strict', 'dns_mode': 'router_default', 'mac_randomization': False, 'public_network_posture': 'cautious'}, 'dns': {'provider': 'system', 'serve_lan': False, 'serve_wireguard_clients': False, 'upstream_mode': 'vpn_preferred', 'ad_blocking': False, 'safe_search': False, 'blocklists_profile': 'none'}, 'admin': {'rocky_admin': {'enabled': True, 'lan': True, 'wireguard': True, 'public': False}, 'qb_webui': {'enabled': False, 'lan': False, 'wireguard': False}, 'terminal': {'enabled': True}, 'auth_profile': 'standard'}, 'transfer': {'enabled': False, 'client': 'qbittorrent', 'vpn_enforced': False, 'kill_switch': True, 'webui_exposure': 'none', 'privacy_profile': 'strict_off', 'bittorrent': {'anonymous_mode': False, 'force_encryption': False, 'dht': False, 'pex': False, 'lsd': False, 'upnp': False, 'fixed_port': 6881, 'random_port': False, 'port_forwarding': False}}, 'portable': {'enabled': False, 'hotspot_enabled': False, 'hotspot_ssid': None, 'captive_portal': False, 'passive_collection': False, 'active_collection': False, 'storage_capture': False}, 'power': {'profile': 'normal', 'suspend_nonessential_services': True, 'reduced_polling': True, 'display_refresh_policy': 'normal', 'radios_policy': 'normal'}, 'pikvm': {'policy': 'auto', 'require_minipc_presence': True, 'auto_disable_when_disconnected': True}, 'display': {'surface': 'browser_and_epaper', 'epaper_menu_enabled': True, 'epaper_qr_behavior': 'mode_aware', 'test_path': 'zero2w_manager_menu'}, 'ui': {'warning_level': 'normal', 'reversible_to': 'safe', 'color_hint': 'blue', 'expose_advanced_toggles': False}}, {'mode_id': 'torrent_fortress', 'label': 'Torrent Fortress', 'description': 'Strongest torrent/privacy posture with Proton-enforced transfer path.', 'category': 'privacy', 'network': {'profile': 'wireguard_admin', 'vpn_required': True, 'vpn_provider': 'protonvpn', 'mobile_exit_node': False, 'allow_lan_admin': True, 'allow_wireguard_admin': True, 'allow_public_admin': False, 'firewall_policy': 'strict', 'dns_mode': 'pihole_lan_and_wg', 'mac_randomization': False, 'public_network_posture': 'cautious'}, 'dns': {'provider': 'pihole', 'serve_lan': True, 'serve_wireguard_clients': True, 'upstream_mode': 'vpn_preferred', 'ad_blocking': True, 'safe_search': False, 'blocklists_profile': 'balanced'}, 'admin': {'rocky_admin': {'enabled': True, 'lan': True, 'wireguard': True, 'public': False}, 'qb_webui': {'enabled': True, 'lan': True, 'wireguard': True}, 'terminal': {'enabled': True}, 'auth_profile': 'hardened'}, 'transfer': {'enabled': True, 'client': 'qbittorrent', 'vpn_enforced': True, 'kill_switch': True, 'webui_exposure': 'lan_and_wireguard', 'privacy_profile': 'fortress', 'bittorrent': {'anonymous_mode': True, 'force_encryption': True, 'dht': False, 'pex': False, 'lsd': False, 'upnp': False, 'fixed_port': 6881, 'random_port': False, 'port_forwarding': False}}, 'portable': {'enabled': False, 'hotspot_enabled': False, 'hotspot_ssid': None, 'captive_portal': False, 'passive_collection': False, 'active_collection': False, 'storage_capture': False}, 'power': {'profile': 'normal', 'suspend_nonessential_services': False, 'reduced_polling': False, 'display_refresh_policy': 'normal', 'radios_policy': 'normal'}, 'pikvm': {'policy': 'auto', 'require_minipc_presence': True, 'auto_disable_when_disconnected': True}, 'display': {'surface': 'browser_and_epaper', 'epaper_menu_enabled': True, 'epaper_qr_behavior': 'mode_aware', 'test_path': 'zero2w_manager_menu'}, 'ui': {'warning_level': 'caution', 'reversible_to': 'safe', 'color_hint': 'red', 'expose_advanced_toggles': False}}, {'mode_id': 'pihole_only', 'label': 'Pi-hole Only', 'description': 'Pi-hole DNS active for LAN ad-blocking. No VPN, no transfer.', 'category': 'utility', 'network': {'profile': 'lan_only', 'vpn_required': False, 'vpn_provider': 'none', 'mobile_exit_node': False, 'allow_lan_admin': True, 'allow_wireguard_admin': True, 'allow_public_admin': False, 'firewall_policy': 'strict', 'dns_mode': 'pihole_lan_only', 'mac_randomization': False, 'public_network_posture': 'cautious'}, 'dns': {'provider': 'pihole', 'serve_lan': True, 'serve_wireguard_clients': False, 'upstream_mode': 'direct', 'ad_blocking': True, 'safe_search': False, 'blocklists_profile': 'balanced'}, 'admin': {'rocky_admin': {'enabled': True, 'lan': True, 'wireguard': True, 'public': False}, 'qb_webui': {'enabled': False, 'lan': False, 'wireguard': False}, 'terminal': {'enabled': True}, 'auth_profile': 'standard'}, 'transfer': {'enabled': False, 'client': 'qbittorrent', 'vpn_enforced': False, 'kill_switch': False, 'webui_exposure': 'none', 'privacy_profile': 'off', 'bittorrent': {'anonymous_mode': False, 'force_encryption': False, 'dht': False, 'pex': False, 'lsd': False, 'upnp': False, 'fixed_port': 6881, 'random_port': False, 'port_forwarding': False}}, 'portable': {'enabled': False, 'hotspot_enabled': False, 'hotspot_ssid': None, 'captive_portal': False, 'passive_collection': False, 'active_collection': False, 'storage_capture': False}, 'power': {'profile': 'normal', 'suspend_nonessential_services': False, 'reduced_polling': False, 'display_refresh_policy': 'normal', 'radios_policy': 'normal'}, 'pikvm': {'policy': 'auto', 'require_minipc_presence': True, 'auto_disable_when_disconnected': True}, 'display': {'surface': 'browser_and_epaper', 'epaper_menu_enabled': True, 'epaper_qr_behavior': 'mode_aware', 'test_path': 'zero2w_manager_menu'}, 'ui': {'warning_level': 'normal', 'reversible_to': 'safe', 'color_hint': 'green', 'expose_advanced_toggles': False}}, {'mode_id': 'print_lab', 'label': 'Print Lab', 'description': '3D printer apps active. LAN-only, no VPN, no torrent.', 'category': 'utility', 'network': {'profile': 'lan_only', 'vpn_required': False, 'vpn_provider': 'none', 'mobile_exit_node': False, 'allow_lan_admin': True, 'allow_wireguard_admin': True, 'allow_public_admin': False, 'firewall_policy': 'relaxed', 'dns_mode': 'router_default', 'mac_randomization': False, 'public_network_posture': 'cautious'}, 'dns': {'provider': 'system', 'serve_lan': False, 'serve_wireguard_clients': False, 'upstream_mode': 'direct', 'ad_blocking': False, 'safe_search': False, 'blocklists_profile': 'none'}, 'admin': {'rocky_admin': {'enabled': True, 'lan': True, 'wireguard': True, 'public': False}, 'qb_webui': {'enabled': False, 'lan': False, 'wireguard': False}, 'terminal': {'enabled': True}, 'auth_profile': 'standard'}, 'transfer': {'enabled': False, 'client': 'qbittorrent', 'vpn_enforced': False, 'kill_switch': False, 'webui_exposure': 'none', 'privacy_profile': 'off', 'bittorrent': {'anonymous_mode': False, 'force_encryption': False, 'dht': False, 'pex': False, 'lsd': False, 'upnp': False, 'fixed_port': 6881, 'random_port': False, 'port_forwarding': False}}, 'portable': {'enabled': False, 'hotspot_enabled': False, 'hotspot_ssid': None, 'captive_portal': False, 'passive_collection': False, 'active_collection': False, 'storage_capture': False}, 'power': {'profile': 'normal', 'suspend_nonessential_services': False, 'reduced_polling': False, 'display_refresh_policy': 'normal', 'radios_policy': 'normal'}, 'pikvm': {'policy': 'auto', 'require_minipc_presence': True, 'auto_disable_when_disconnected': True}, 'display': {'surface': 'browser_and_epaper', 'epaper_menu_enabled': True, 'epaper_qr_behavior': 'mode_aware', 'test_path': 'zero2w_manager_menu'}, 'ui': {'warning_level': 'normal', 'reversible_to': 'safe', 'color_hint': 'yellow', 'expose_advanced_toggles': False}}, {'mode_id': 'daily_driver', 'label': 'Daily Driver', 'description': 'Balanced everyday mode. Pi-hole on, no torrent, LAN admin.', 'category': 'baseline', 'network': {'profile': 'lan_only', 'vpn_required': False, 'vpn_provider': 'none', 'mobile_exit_node': False, 'allow_lan_admin': True, 'allow_wireguard_admin': True, 'allow_public_admin': False, 'firewall_policy': 'standard', 'dns_mode': 'pihole_lan_only', 'mac_randomization': False, 'public_network_posture': 'cautious'}, 'dns': {'provider': 'pihole', 'serve_lan': True, 'serve_wireguard_clients': True, 'upstream_mode': 'direct', 'ad_blocking': True, 'safe_search': False, 'blocklists_profile': 'balanced'}, 'admin': {'rocky_admin': {'enabled': True, 'lan': True, 'wireguard': True, 'public': False}, 'qb_webui': {'enabled': False, 'lan': False, 'wireguard': False}, 'terminal': {'enabled': True}, 'auth_profile': 'standard'}, 'transfer': {'enabled': False, 'client': 'qbittorrent', 'vpn_enforced': False, 'kill_switch': False, 'webui_exposure': 'none', 'privacy_profile': 'off', 'bittorrent': {'anonymous_mode': False, 'force_encryption': False, 'dht': False, 'pex': False, 'lsd': False, 'upnp': False, 'fixed_port': 6881, 'random_port': False, 'port_forwarding': False}}, 'portable': {'enabled': False, 'hotspot_enabled': False, 'hotspot_ssid': None, 'captive_portal': False, 'passive_collection': False, 'active_collection': False, 'storage_capture': False}, 'power': {'profile': 'normal', 'suspend_nonessential_services': False, 'reduced_polling': False, 'display_refresh_policy': 'normal', 'radios_policy': 'normal'}, 'pikvm': {'policy': 'auto', 'require_minipc_presence': True, 'auto_disable_when_disconnected': True}, 'display': {'surface': 'browser_and_epaper', 'epaper_menu_enabled': True, 'epaper_qr_behavior': 'mode_aware', 'test_path': 'zero2w_manager_menu'}, 'ui': {'warning_level': 'normal', 'reversible_to': 'safe', 'color_hint': 'blue', 'expose_advanced_toggles': False}}]}
 DEFAULT_CURRENT_MODE_REQUEST = {'version': 1, 'selected_mode_id': 'torrent_fortress', 'previous_mode_id': 'safe', 'requested_at': '2026-07-26T20:45:00Z', 'requested_by': 'operator', 'reason': 'Enable the strongest current torrent/privacy posture while preserving Rocky Admin access on LAN and WireGuard.', 'override_flags': {'mobile_exit_node': False, 'pikvm_policy': 'auto', 'epaper_menu_enabled': True, 'epaper_test_path': 'zero2w_manager_menu', 'allow_public_admin': False}}
 
@@ -629,6 +630,10 @@ class ManagerDaemon:
     def _selection_action_hint(self, service: dict[str, Any]) -> str:
         if self._service_supports_qr_preview(service):
             return "HOLD=QR"
+        if self._is_resident_display_app(service):
+            if self._service_is_running(service):
+                return "HOLD=OPEN XL=STOP"
+            return "HOLD=OPEN"
         if self._is_systemd_display_service(service):
             if service.get("display_switch_target"):
                 return "HOLD=OPEN TAP=SWAP"
@@ -641,8 +646,14 @@ class ManagerDaemon:
         service_type = str(service.get("type") or "application")
         app_id = str(service.get("id") or "")
 
+        if self._is_resident_display_app(service):
+            if self._service_is_foreground(service):
+                return "LIVE"
+            if self._service_is_running(service):
+                return "READY"
+
         if self._is_systemd_display_service(service):
-            if self.active_app_id == app_id and self._app_is_running():
+            if self._service_is_foreground(service):
                 return "LIVE"
 
             unit = str(service.get("systemd_service") or "")
@@ -670,7 +681,7 @@ class ManagerDaemon:
 
             return "BACKGROUND"
 
-        if self.active_app_id == app_id and self._app_is_running():
+        if self._service_is_foreground(service):
             return "LIVE"
 
         if not service.get("configured", True):
@@ -711,8 +722,172 @@ class ManagerDaemon:
             and not service.get("command")
         )
 
+    def _is_resident_display_app(
+        self,
+        service: dict[str, Any] | None,
+    ) -> bool:
+        return bool(
+            isinstance(service, dict)
+            and service.get("display_owner")
+            and service.get("resident_display")
+        )
+
+    def _load_managed_process_state(self) -> dict[str, Any]:
+        try:
+            if MANAGED_PROCESS_STATE_PATH.is_file():
+                data = json.loads(
+                    MANAGED_PROCESS_STATE_PATH.read_text(encoding='utf-8')
+                )
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            self.log.exception("Failed to read managed process state")
+        return {}
+
+    def _save_managed_process_state(
+        self,
+        state: dict[str, Any],
+    ) -> None:
+        try:
+            MANAGED_PROCESS_STATE_PATH.parent.mkdir(
+                mode=0o775,
+                parents=True,
+                exist_ok=True,
+            )
+            temporary = MANAGED_PROCESS_STATE_PATH.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(state, indent=2) + "\n",
+                encoding='utf-8',
+            )
+            temporary.replace(MANAGED_PROCESS_STATE_PATH)
+        except Exception:
+            self.log.exception("Failed to write managed process state")
+
+    def _managed_process_matches(
+        self,
+        app_id: str,
+    ) -> tuple[int | None, bool]:
+        state = self._load_managed_process_state()
+        if str(state.get("active_mode") or "") != app_id:
+            return None, False
+
+        pid = state.get("active_pid")
+        if not isinstance(pid, int) or pid <= 1:
+            return None, False
+
+        try:
+            os.kill(pid, 0)
+            return pid, True
+        except OSError:
+            return pid, False
+
+    def _signal_service_process_group(
+        self,
+        service: dict[str, Any],
+        sig: signal.Signals,
+    ) -> bool:
+        app_id = str(service.get("id") or "")
+        pid, running = self._managed_process_matches(app_id)
+        if not pid or not running:
+            return False
+
+        try:
+            os.killpg(pid, sig)
+            return True
+        except Exception:
+            self.log.exception(
+                "Failed to send %s to %s process group %s",
+                sig.name,
+                app_id,
+                pid,
+            )
+            return False
+
+    def _kill_systemd_unit_signal(
+        self,
+        unit: str,
+        sig: str,
+    ) -> bool:
+        if not unit:
+            return False
+        try:
+            result = subprocess.run(
+                ["systemctl", "kill", "--signal", sig, "--kill-whom=main", unit],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return True
+            self.log.warning(
+                "systemctl kill --signal %s failed for %s: %s",
+                sig,
+                unit,
+                result.stderr.strip() or result.stdout.strip() or result.returncode,
+            )
+            return False
+        except Exception:
+            self.log.exception(
+                "systemctl kill --signal %s failed for %s",
+                sig,
+                unit,
+            )
+            return False
+
+    def _service_is_running(
+        self,
+        service: dict[str, Any] | None,
+    ) -> bool:
+        if not isinstance(service, dict):
+            return False
+
+        if self._is_systemd_display_service(service):
+            unit = str(service.get("systemd_service") or "").strip()
+            return bool(unit) and self._mode_service_status(unit) == "active"
+
+        app_id = str(service.get("id") or "")
+        _pid, running = self._managed_process_matches(app_id)
+        return running
+
+    def _service_is_foreground(
+        self,
+        service: dict[str, Any] | None,
+    ) -> bool:
+        if not isinstance(service, dict):
+            return False
+        app_id = str(service.get("id") or "")
+        return (
+            not self.menu_visible
+            and bool(app_id)
+            and self.active_app_id == app_id
+            and self._service_is_running(service)
+        )
+
+    def _pause_resident_display_service(
+        self,
+        service: dict[str, Any],
+    ) -> bool:
+        if self._is_systemd_display_service(service):
+            unit = str(service.get("systemd_service") or "").strip()
+            return self._kill_systemd_unit_signal(unit, "STOP")
+
+        return self._signal_service_process_group(service, signal.SIGSTOP)
+
+    def _resume_resident_display_service(
+        self,
+        service: dict[str, Any],
+    ) -> bool:
+        if self._is_systemd_display_service(service):
+            unit = str(service.get("systemd_service") or "").strip()
+            if self._mode_service_status(unit) == "active":
+                return self._kill_systemd_unit_signal(unit, "CONT")
+            return False
+
+        return self._signal_service_process_group(service, signal.SIGCONT)
+
     def _foreground_systemd_app_running(self) -> bool:
-        if not self.active_app_id:
+        if self.menu_visible or not self.active_app_id:
             return False
 
         try:
@@ -730,6 +905,8 @@ class ManagerDaemon:
         return self._mode_service_status(unit) == "active"
 
     def _app_is_running(self) -> bool:
+        if self.menu_visible:
+            return False
         return (
             self.application_manager.is_running
             or self._foreground_systemd_app_running()
@@ -944,8 +1121,7 @@ class ManagerDaemon:
             if (
                 not self.menu_visible
                 and event.held_seconds >= ButtonService.LONG_PRESS_SECONDS
-                and event.held_seconds < ButtonService.VERY_LONG_PRESS_SECONDS
-                and self._toggle_companion_display()
+                and self._park_active_display_to_menu()
             ):
                 return
 
@@ -954,6 +1130,16 @@ class ManagerDaemon:
             )
 
             if event.held_seconds >= ButtonService.VERY_LONG_PRESS_SECONDS:
+                if not self.menu_visible and self.active_app_id:
+                    try:
+                        active_service = self._service_configuration(self.active_app_id)
+                    except Exception:
+                        active_service = None
+
+                    if self._is_resident_display_app(active_service):
+                        if self._park_active_display_to_menu():
+                            return
+
                 prep_request = self._consume_isp_prep_request()
                 button_server.publish(
                     "select",
@@ -1026,6 +1212,8 @@ class ManagerDaemon:
                 return
 
             if event.held_seconds >= ButtonService.VERY_LONG_PRESS_SECONDS:
+                if self.menu_visible and self._stop_selected_menu_item():
+                    return
                 self.show_menu(
                     "No application running"
                 )
@@ -1177,6 +1365,124 @@ class ManagerDaemon:
             [str(unit) for unit in stop_units],
         )
 
+    def _stop_resident_display_service(
+        self,
+        service: dict[str, Any],
+    ) -> bool:
+        if self._is_systemd_display_service(service):
+            return self._stop_systemd_display_service(service)
+
+        # Resume first so TERM/KILL are not left pending against a stopped task.
+        self._resume_resident_display_service(service)
+        app_id = str(service.get("id") or "")
+        pid, running = self._managed_process_matches(app_id)
+        if not pid or not running:
+            return False
+
+        try:
+            os.killpg(pid, signal.SIGTERM)
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                _pid, still_running = self._managed_process_matches(app_id)
+                if not still_running:
+                    break
+                time.sleep(0.25)
+            _pid, still_running = self._managed_process_matches(app_id)
+            if still_running:
+                os.killpg(pid, signal.SIGKILL)
+            state = self._load_managed_process_state()
+            state.update(
+                {
+                    "active_mode": "idle",
+                    "active_pid": None,
+                    "status": "stopped",
+                    "last_error": None,
+                }
+            )
+            self._save_managed_process_state(state)
+            return True
+        except Exception:
+            self.log.exception(
+                "Failed to stop resident display process for %s",
+                app_id,
+            )
+            return False
+
+    def _park_active_display_to_menu(self) -> bool:
+        if self.menu_visible or not self.active_app_id:
+            return False
+
+        try:
+            service = self._service_configuration(self.active_app_id)
+        except Exception:
+            return False
+
+        if not self._is_resident_display_app(service):
+            return False
+
+        app_name = str(service.get("name") or self.active_app_id)
+        if not self._pause_resident_display_service(service):
+            self.show_menu(f"{app_name}: PAUSE FAILED")
+            return True
+
+        time.sleep(0.2)
+        self.show_menu(f"{app_name}: MENU")
+        return True
+
+    def _resume_service_to_foreground(
+        self,
+        service: dict[str, Any],
+    ) -> bool:
+        app_id = str(service.get("id") or "")
+        app_name = str(service.get("name") or app_id or "App")
+
+        self.menu.render(f"Opening {app_name}...")
+        self.hide_menu()
+
+        if self._service_is_running(service):
+            resumed = self._resume_resident_display_service(service)
+            if not resumed and self._is_systemd_display_service(service):
+                resumed = self._run_systemctl(
+                    "start",
+                    [str(service.get("systemd_service") or "").strip()],
+                )
+            if not resumed:
+                self.show_menu(f"{app_name}: RESUME FAILED")
+                return False
+
+            with self._state_lock:
+                self.active_app_id = app_id
+
+            owner = "systemd" if self._is_systemd_display_service(service) else "process"
+            self.state_publisher.set_foreground_application(
+                app_id,
+                transition="application_resumed",
+                publish=False,
+            )
+            self._publish_runtime_state(
+                {
+                    "runtime": {
+                        "status": "running",
+                        "mode": "application",
+                    },
+                    "application": {
+                        "active_id": app_id,
+                        "active_pid": None if owner == "systemd" else self._managed_process_matches(app_id)[0],
+                        "status": "running",
+                        "name": app_name,
+                        "owner": owner,
+                    },
+                    "display": {
+                        "connected": True,
+                        "mode": "application_owned",
+                    },
+                }
+            )
+            return True
+
+        self._activate_service(service)
+        return True
+
     def _handle_background_service(
         self,
         service: dict[str, Any],
@@ -1267,6 +1573,10 @@ class ManagerDaemon:
             app_id
         )
 
+        if self._is_resident_display_app(service):
+            self._resume_service_to_foreground(service)
+            return
+
         if self._service_supports_qr_preview(service):
             self._handle_background_service(service)
             return
@@ -1281,6 +1591,32 @@ class ManagerDaemon:
             return
 
         self._activate_service(service)
+
+    def _stop_selected_menu_item(self) -> bool:
+        selected = self.menu.selected
+        app_id = str(selected.get("id") or "")
+        app_name = str(selected.get("name") or app_id or "App")
+        if not app_id:
+            return False
+
+        try:
+            service = self._service_configuration(app_id)
+        except Exception:
+            self.show_menu(f"{app_name}: UNKNOWN")
+            return True
+
+        if not self._is_resident_display_app(service):
+            return False
+
+        if not self._service_is_running(service):
+            self.show_menu(f"{app_name}: NOT RUNNING")
+            return True
+
+        if self._stop_resident_display_service(service):
+            self.show_menu(f"{app_name}: STOPPED")
+        else:
+            self.show_menu(f"{app_name}: STOP FAILED")
+        return True
 
     def _activate_systemd_display_service(
         self,
@@ -1353,8 +1689,19 @@ class ManagerDaemon:
             target_id,
         )
 
-        self._stop_active_application()
-        time.sleep(0.75)
+        try:
+            source_service = self._service_configuration(source_id)
+        except Exception:
+            source_service = None
+
+        if source_service and self._is_resident_display_app(source_service):
+            if not self._pause_resident_display_service(source_service):
+                self.show_menu(f"Switch failed: {source_id}")
+                return True
+            time.sleep(0.2)
+        else:
+            self._stop_active_application()
+            time.sleep(0.75)
 
         try:
             target_service = self._service_configuration(target_id)
@@ -1365,7 +1712,10 @@ class ManagerDaemon:
             return True
 
         try:
-            self._activate_service(target_service)
+            if self._is_resident_display_app(target_service):
+                self._resume_service_to_foreground(target_service)
+            else:
+                self._activate_service(target_service)
         except Exception:
             self.log.exception(
                 "Companion display toggle failed: %s -> %s",
@@ -1479,7 +1829,7 @@ class ManagerDaemon:
                 not self.menu_visible
                 and is_long_press
                 and not is_very_long_press
-                and self._toggle_companion_display()
+                and self._park_active_display_to_menu()
             ):
                 return
 
@@ -1516,10 +1866,25 @@ class ManagerDaemon:
 
             # Extra-long hold remains the recovery path.
             if is_very_long_press:
+                if self.menu_visible and self._stop_selected_menu_item():
+                    return
                 if (
                     not self.menu_visible
                     or self._app_is_running()
                 ):
+                    if (
+                        not self.menu_visible
+                        and self.active_app_id
+                    ):
+                        try:
+                            active_service = self._service_configuration(self.active_app_id)
+                        except Exception:
+                            active_service = None
+
+                        if self._is_resident_display_app(active_service):
+                            if self._park_active_display_to_menu():
+                                return
+
                     prep_request = self._consume_isp_prep_request()
                     button_server.publish(
                         "select",

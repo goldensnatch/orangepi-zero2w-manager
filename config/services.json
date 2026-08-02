@@ -50,6 +50,7 @@
     "configured": true,
     "description": "Wireless learning companion",
     "display_owner": true,
+    "resident_display": true,
     "display_switch_target": "ragnar",
     "environment": {},
     "installed_path": "/opt/pwnagotchi",
@@ -76,6 +77,7 @@
     ],
     "description": "Network discovery and analysis",
     "display_owner": true,
+    "resident_display": true,
     "display_switch_target": "pwnagotchi",
     "environment": {
       "HOME": "/opt/ragnar",
