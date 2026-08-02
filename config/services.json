@@ -62,17 +62,11 @@
       "bettercap.service",
       "pwnagotchi.service"
     ],
-    "pause_services": [
+    "freeze_services": [
       "pwnagotchi.service"
     ],
-    "pause_timeout_seconds": 12,
-    "resume_services": [
+    "thaw_services": [
       "pwnagotchi.service"
-    ],
-    "resume_timeout_seconds": 20,
-    "resume_accept_states": [
-      "active",
-      "activating"
     ],
     "stop_services": [
       "pwnagotchi.service",
