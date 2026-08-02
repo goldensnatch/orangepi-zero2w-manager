@@ -419,6 +419,41 @@ class ManagerDaemon:
             )
             return False
 
+    def _await_systemd_service_state(
+        self,
+        unit: str,
+        expected: str,
+        *,
+        timeout_seconds: float = 8.0,
+    ) -> bool:
+        unit = str(unit).strip()
+        if not unit:
+            return False
+
+        deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+        expected = expected.strip().lower()
+
+        while time.monotonic() < deadline:
+            status = self._mode_service_status(unit).strip().lower()
+            if status == expected:
+                return True
+            if expected == "inactive" and status in {"inactive", "failed", "unknown"}:
+                return True
+            time.sleep(0.15)
+
+        status = self._mode_service_status(unit).strip().lower()
+        if status == expected:
+            return True
+        if expected == "inactive" and status in {"inactive", "failed", "unknown"}:
+            return True
+        self.log.warning(
+            "Timed out waiting for %s to become %s (last=%s)",
+            unit,
+            expected,
+            status,
+        )
+        return False
+
     def _load_web_service_cache(self) -> dict[str, Any]:
         return self._read_json_file(WEB_SERVICE_CACHE_PATH, {})
 
@@ -914,10 +949,13 @@ class ManagerDaemon:
         if self._is_systemd_display_service(service):
             pause_units = service.get("pause_services")
             if isinstance(pause_units, list) and pause_units:
-                return self._run_systemctl(
+                if not self._run_systemctl(
                     "stop",
                     [str(unit) for unit in pause_units],
-                )
+                ):
+                    return False
+                primary = str(service.get("systemd_service") or "").strip()
+                return self._await_systemd_service_state(primary, "inactive")
 
             unit = str(service.get("systemd_service") or "").strip()
             return self._kill_systemd_unit_signal(unit, "STOP")
@@ -931,10 +969,13 @@ class ManagerDaemon:
         if self._is_systemd_display_service(service):
             resume_units = service.get("resume_services")
             if isinstance(resume_units, list) and resume_units:
-                return self._run_systemctl(
+                if not self._run_systemctl(
                     "start",
                     [str(unit) for unit in resume_units],
-                )
+                ):
+                    return False
+                primary = str(service.get("systemd_service") or "").strip()
+                return self._await_systemd_service_state(primary, "active")
 
             unit = str(service.get("systemd_service") or "").strip()
             return self._kill_systemd_unit_signal(unit, "CONT")
@@ -1510,6 +1551,30 @@ class ManagerDaemon:
         )
         return True
 
+    def _quiesce_other_resident_displays(
+        self,
+        target_app_id: str,
+    ) -> None:
+        for app_id in self.menu.services:
+            if app_id == target_app_id:
+                continue
+            try:
+                service = self._service_configuration(str(app_id))
+            except Exception:
+                continue
+
+            if not self._is_resident_display_app(service):
+                continue
+            if not self._service_is_running(service):
+                continue
+
+            self.log.info(
+                "Quiescing competing resident display %s before foregrounding %s",
+                app_id,
+                target_app_id,
+            )
+            self._pause_resident_display_service(service)
+
     def _resume_service_to_foreground(
         self,
         service: dict[str, Any],
@@ -1521,6 +1586,8 @@ class ManagerDaemon:
 
         if show_transition:
             self.menu.render(f"Opening {app_name}...")
+
+        self._quiesce_other_resident_displays(app_id)
 
         if self.menu_visible:
             self.hide_menu()
@@ -1726,6 +1793,9 @@ class ManagerDaemon:
             self.menu.render(
                 f"Starting {app_name}..."
             )
+
+        self._quiesce_other_resident_displays(app_id)
+
         if self.menu_visible:
             self.hide_menu()
 
