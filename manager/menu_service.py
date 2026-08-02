@@ -54,6 +54,18 @@ class MenuService:
 
         for service in self.catalog.menu_services():
             service_id = str(service["id"])
+            explicit_configured = service.get("configured")
+            if explicit_configured is None:
+                explicit_configured = bool(
+                    service.get("command") is not None
+                    or service.get("systemd_service")
+                    or service.get("docker_container")
+                    or service.get("installed_path")
+                    or (
+                        str(service.get("type") or "").strip() == "background_service"
+                        and service.get("url")
+                    )
+                )
 
             items.append(
                 {
@@ -66,12 +78,7 @@ class MenuService:
                         "description",
                         "",
                     ),
-                    "configured": bool(
-                        service.get(
-                            "configured",
-                            service.get("command") is not None,
-                        )
-                    ),
+                    "configured": bool(explicit_configured),
                     "order": int(
                         service.get(
                             "menu_order",
