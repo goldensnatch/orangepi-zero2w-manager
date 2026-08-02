@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import socket
@@ -9,7 +10,9 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from urllib.parse import urlparse, urlunparse
+from urllib.request import urlopen
 
 from PIL import Image, ImageDraw, ImageFont
 from zero2w_epaper import Display
@@ -93,12 +96,15 @@ class PrintLabApp(RockyButtonApp):
         self._last_status_poll = 0.0
         self._service_snapshot: dict[str, str] = {}
         self._isp_prep_armed = False
+        self._mainsail_qr_target: str | None = None
+        self._mainsail_qr_image: Image.Image | None = None
 
     def setup(self) -> None:
         self._clear_isp_prep_request()
         self.display_context = Display()
         self.display = self.display_context.__enter__()
         self._poll_service_snapshot(force=True)
+        self._refresh_mainsail_qr()
         self._render_if_needed(force=True)
         LOGGER.info("Print Lab started")
 
@@ -240,6 +246,28 @@ class PrintLabApp(RockyButtonApp):
         if snapshot != self._service_snapshot:
             self._service_snapshot = snapshot
             self._dirty = True
+        self._refresh_mainsail_qr()
+
+    def _mainsail_public_url(self) -> str:
+        return publicize_service_url(MAINSAIL_URL)
+
+    def _refresh_mainsail_qr(self) -> None:
+        target = self._mainsail_public_url()
+        if target == self._mainsail_qr_target and self._mainsail_qr_image is not None:
+            return
+        self._mainsail_qr_target = target
+        self._mainsail_qr_image = self._build_qr_image(target)
+
+    @staticmethod
+    def _build_qr_image(target: str) -> Image.Image | None:
+        qr_url = "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + quote(target, safe="")
+        try:
+            with urlopen(qr_url, timeout=8) as response:
+                qr = Image.open(io.BytesIO(response.read())).convert("1")
+                return qr.resize((76, 76))
+        except Exception:
+            LOGGER.exception("Failed to fetch Mainsail QR")
+            return None
 
     def _write_isp_prep_request(self) -> None:
         payload = {
@@ -288,19 +316,14 @@ class PrintLabApp(RockyButtonApp):
         if self.page == "menu":
             self._draw_menu(draw, font)
         elif self.page == "mainsail":
-            self._draw_lines(draw, font, "MAINSAIL", [
-                "Browser control:",
-                publicize_service_url(MAINSAIL_URL),
-                "",
-                "Open from LAN client.",
-                "UP/DN returns.",
-            ])
+            self._draw_mainsail_qr_card(image, draw, font)
+            return image
         elif self.page == "klipper_status":
             self._draw_lines(draw, font, "KLIPPER STATUS", [
                 f"Klipper: {self._service_snapshot.get('klipper', 'unknown').upper()}",
                 f"Moonraker: {self._service_snapshot.get('moonraker', 'unknown').upper()}",
                 "",
-                publicize_service_url(MAINSAIL_URL),
+                self._mainsail_public_url(),
                 "",
                 "HOLD refresh status.",
             ])
@@ -336,6 +359,31 @@ class PrintLabApp(RockyButtonApp):
         draw.text((8, 101), self.footer_text(), font=font, fill=0)
         return image
 
+    def _draw_mainsail_qr_card(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        font: ImageFont.ImageFont,
+    ) -> None:
+        qr = self._mainsail_qr_image
+        if qr is not None:
+            image.paste(qr, (10, 28))
+            draw.rectangle((8, 26, 88, 106), outline=0)
+            draw.text((102, 28), "MAINSAIL QR", font=font, fill=0)
+            draw.text((102, 41), "Scan for Klipper", font=font, fill=0)
+            draw.text((102, 54), "browser control.", font=font, fill=0)
+            self._draw_wrapped_text(draw, font, self._mainsail_public_url(), 102, 70, 20, 3)
+            return
+
+        self._draw_lines(draw, font, "MAINSAIL", [
+            "QR fetch failed.",
+            "",
+            "Browser control:",
+            self._mainsail_public_url(),
+            "",
+            "UP/DN returns.",
+        ])
+
     def _draw_menu(self, draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont) -> None:
         count_text = f"{self.selected_index + 1}/{len(self.menu_items)}"
         draw.text((WIDTH - 40, 5), count_text[:6], font=font, fill=0)
@@ -365,6 +413,37 @@ class PrintLabApp(RockyButtonApp):
         for line in lines[:6]:
             draw.text((8, y), line[:38], font=font, fill=0)
             y += 11
+
+    @staticmethod
+    def _draw_wrapped_text(
+        draw: ImageDraw.ImageDraw,
+        font: ImageFont.ImageFont,
+        text: str,
+        x: int,
+        y: int,
+        width_chars: int,
+        max_lines: int,
+    ) -> None:
+        remaining = text.strip()
+        line_y = y
+        for _ in range(max_lines):
+            if not remaining:
+                break
+            line = remaining[:width_chars]
+            if len(remaining) > width_chars:
+                split_at = line.rfind("/")
+                if split_at <= 0:
+                    split_at = line.rfind(".")
+                if split_at <= 0:
+                    split_at = width_chars
+                line = remaining[:split_at]
+                remaining = remaining[split_at:].lstrip("/")
+                if split_at != width_chars:
+                    line = line + "/"
+            else:
+                remaining = ""
+            draw.text((x, line_y), line[:width_chars], font=font, fill=0)
+            line_y += 11
 
     def _render_if_needed(self, *, force: bool = False) -> None:
         with self._lock:

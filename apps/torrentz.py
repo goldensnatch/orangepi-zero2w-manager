@@ -84,6 +84,7 @@ class TorrentzApp(RockyButtonApp):
         self._state_snapshot: dict[str, Any] = {}
         self._qr_target: str | None = None
         self._qr_image: Image.Image | None = None
+        self._qr_caption: str = ""
 
     def setup(self) -> None:
         self.display_context = Display()
@@ -218,19 +219,21 @@ class TorrentzApp(RockyButtonApp):
     def _qbt_proxy_url(self) -> str:
         live = self._web_service_snapshot().get("transfer-stack", {})
         if isinstance(live, dict):
-            tokenized = str(live.get("tokenized_proxy_url") or "").strip()
-            if tokenized:
-                return tokenized
             public = str(live.get("url") or live.get("public_url") or "").strip()
             if public:
                 return public
+            tokenized = str(live.get("tokenized_proxy_url") or "").strip()
+            if tokenized:
+                return tokenized
         return publicize_service_url("http://127.0.0.1:8088/")
 
     def _refresh_qr_cache(self) -> None:
         target = self._qbt_proxy_url()
-        if target == self._qr_target and self._qr_image is not None:
+        caption = publicize_service_url(target)
+        if target == self._qr_target and self._qr_image is not None and caption == self._qr_caption:
             return
         self._qr_target = target
+        self._qr_caption = caption
         self._qr_image = self._build_qr_image(target)
 
     @staticmethod
@@ -239,7 +242,7 @@ class TorrentzApp(RockyButtonApp):
         try:
             with urlopen(qr_url, timeout=8) as response:
                 qr = Image.open(io.BytesIO(response.read())).convert("1")
-                return qr.resize((88, 88))
+                return qr.resize((76, 76))
         except Exception:
             LOGGER.exception("Failed to fetch qBittorrent QR")
             return None
@@ -281,6 +284,7 @@ class TorrentzApp(RockyButtonApp):
             self._draw_menu(draw, font)
         elif self.page == "qbt":
             self._draw_qbt_qr_card(image, draw, font)
+            return image
         elif self.page == "vpn":
             mode = self._mode_snapshot()
             services = mode.get("services", {}) if isinstance(mode.get("services"), dict) else {}
@@ -328,7 +332,6 @@ class TorrentzApp(RockyButtonApp):
                 f"LAN Adm: {str(policies.get('lan_admin', False)).upper()}",
                 f"PIKVM: {str(self._mode_snapshot().get('services', {}).get('pikvm', 'auto')).upper()}",
             ])
-
         draw.line((6, 94, WIDTH - 7, 94), fill=0)
         draw.text((8, 101), self.footer_text(), font=font, fill=0)
         return image
@@ -379,14 +382,14 @@ class TorrentzApp(RockyButtonApp):
         draw.line((6, 18, WIDTH - 7, 18), fill=0)
         qr = self._qr_image
         if qr is not None:
-            image.paste(qr, (8, 24))
-            draw.rectangle((6, 22, 98, 114), outline=0)
+            image.paste(qr, (10, 28))
+            draw.rectangle((8, 26, 88, 106), outline=0)
             mode_text = self._mode_line()[:15]
-            draw.text((108, 28), f"Mode: {mode_text}", font=font, fill=0)
-            draw.text((108, 41), "Scan for Web UI", font=font, fill=0)
-            draw.text((108, 54), "VPN-aware link", font=font, fill=0)
-            draw.text((108, 67), "if Rocky has one.", font=font, fill=0)
-            self._draw_wrapped_text(draw, font, self._qbt_proxy_url(), 108, 83, 18, 2)
+            draw.text((102, 28), f"Mode: {mode_text}", font=font, fill=0)
+            draw.text((102, 41), "Scan for Web UI", font=font, fill=0)
+            draw.text((102, 54), "Stable browser URL", font=font, fill=0)
+            draw.text((102, 67), "for this session.", font=font, fill=0)
+            self._draw_wrapped_text(draw, font, self._qr_caption, 102, 82, 20, 3)
             return
 
         self._draw_lines(draw, font, "QBITTORRENT", [
@@ -394,7 +397,7 @@ class TorrentzApp(RockyButtonApp):
             "QR fetch failed.",
             "",
             "URL fallback:",
-            self._qbt_proxy_url(),
+            self._qr_caption or self._qbt_proxy_url(),
             "Hold refresh status.",
         ])
 

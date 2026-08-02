@@ -2187,7 +2187,7 @@ class ManagerDaemon:
         time.sleep(0.2)
         self.show_menu(
             f"{app_name}: MENU",
-            force_full=True,
+            force_full=False,
         )
         return True
 
