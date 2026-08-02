@@ -360,20 +360,17 @@ handlers whenever possible.
 
 ### Launcher active
 
-- Navigate short press: move to the next application
-- Select short press: launch the selected application
-- Select long press: reserved runtime action
+- Button 1 short press: move up through applications
+- Button 2 short press: move down through applications
+- Long hold on either button: open the selected application or trigger the selected launcher action
 
 ### Foreground application active
 
-- Navigate short press: delivered to the application
-- Select short press: delivered to the application
-- Select long press:
-  1. Delivered as a Home event when supported
-  2. Runtime stops the foreground application
-  3. Runtime restores the launcher
-
-Long Select remains controlled by Rocky Runtime even when an application
+- Button 1 short press: delivered to the application as `up / short_press`
+- Button 2 short press: delivered to the application as `down / short_press`
+- Long hold on either button: delivered to the application as `select / long_press`
+- Extra-long hold: reserved runtime stop/home action
+Extra-long hold remains controlled by Rocky Runtime even when an application
 receives the event.
 
 Applications must not disable the universal Home behavior.

@@ -106,22 +106,22 @@ class {class_name}(RockyButtonApp):
         )
 
         if (
-            event.button == "navigate"
+            event.button == "up"
             and event.action == "short_press"
         ):
-            logger.info("Navigate pressed")
+            logger.info("Up pressed")
 
         elif (
-            event.button == "select"
+            event.button == "down"
             and event.action == "short_press"
         ):
-            logger.info("Select pressed")
+            logger.info("Down pressed")
 
         elif (
             event.button == "select"
             and event.action == "long_press"
         ):
-            logger.info("Home requested")
+            logger.info("Select / interact requested")
 
     def cleanup(self) -> None:
         logger.info("{app_name} stopped")

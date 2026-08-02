@@ -533,10 +533,10 @@ class ManagerDaemon:
 
     def _selection_action_hint(self, service: dict[str, Any]) -> str:
         if self._service_supports_qr_preview(service):
-            return "SELECT=QR"
+            return "HOLD=QR"
         if service.get("type") == "background_service":
-            return "SELECT=STATUS"
-        return "SELECT=OPEN HOLDNAV=BACK"
+            return "HOLD=STATUS"
+        return "UP/DN BROWSE HOLD OPEN"
 
     def _service_status_hint(self, service: dict[str, Any]) -> str:
         service_type = str(service.get("type") or "application")
@@ -755,16 +755,45 @@ class ManagerDaemon:
         self,
         event: ButtonEvent,
     ) -> None:
-        """KEY_1 moves to the next launcher item."""
+        """KEY_1 tap moves up; hold selects; extra hold stops."""
 
         if self._app_is_running() or not self.menu_visible:
             self.log.info(
-                "Forwarding Navigate button to active application"
+                "Forwarding Up/Select button to active application"
             )
 
+            if event.held_seconds >= ButtonService.VERY_LONG_PRESS_SECONDS:
+                button_server.publish(
+                    "select",
+                    "very_long_press",
+                    duration=event.held_seconds,
+                )
+                if self._app_is_running():
+                    self.log.info(
+                        "Stopping active application via very long Up/Select hold"
+                    )
+                    result = self._stop_active_application()
+                    self.log.info(
+                        "Stop return code: %s",
+                        result,
+                    )
+                    time.sleep(0.75)
+                    self.show_menu(
+                        "Application stopped"
+                    )
+                return
+
+            if event.held_seconds >= ButtonService.LONG_PRESS_SECONDS:
+                button_server.publish(
+                    "select",
+                    "long_press",
+                    duration=event.held_seconds,
+                )
+                return
+
             button_server.publish(
-                "navigate",
-                "long_press" if event.held_seconds >= ButtonService.LONG_PRESS_SECONDS else "short_press",
+                "up",
+                "short_press",
                 duration=event.held_seconds,
             )
             return
@@ -783,7 +812,7 @@ class ManagerDaemon:
             {
                 "input": {
                     "provider": "lradc",
-                    "action": "navigate",
+                    "action": "up_or_select",
                     "name": event.name,
                     "held_seconds": event.held_seconds,
                 }
@@ -798,10 +827,17 @@ class ManagerDaemon:
                 )
                 return
 
+            if event.held_seconds >= ButtonService.VERY_LONG_PRESS_SECONDS:
+                self.show_menu(
+                    "No application running"
+                )
+                return
+
             if event.held_seconds >= ButtonService.LONG_PRESS_SECONDS:
-                selected = self.menu.previous()
-            else:
-                selected = self.menu.next()
+                self._activate_selected_menu_item()
+                return
+
+            selected = self.menu.previous()
 
             self.log.info(
                 "Selected menu item: %s",
@@ -903,11 +939,86 @@ class ManagerDaemon:
         )
         self.show_menu(message)
 
+    def _activate_selected_menu_item(self) -> None:
+        selected = self.menu.selected
+        app_id = str(selected["id"])
+        app_name = str(selected["name"])
+
+        self.log.info(
+            "Launching selected menu item: %s",
+            app_id,
+        )
+
+        if not selected.get("configured", False):
+            self.show_menu(
+                f"{app_name}: NOT INSTALLED"
+            )
+            return
+
+        service = self._service_configuration(
+            app_id
+        )
+
+        if self._service_supports_qr_preview(service):
+            self._handle_background_service(service)
+            return
+
+        if (
+            service.get("type")
+            == "background_service"
+        ):
+            self._handle_background_service(
+                service
+            )
+            return
+
+        self.menu.render(
+            f"Starting {app_name}..."
+        )
+        self.hide_menu()
+
+        process = self.application_manager.launch(
+            service
+        )
+
+        with self._state_lock:
+            self.active_app_id = app_id
+
+        self.log.info(
+            "Started %s with PID %s",
+            app_id,
+            process.pid,
+        )
+
+        self.state_publisher.set_foreground_application(
+            app_id,
+            transition="application_started",
+            publish=False,
+        )
+        self._publish_runtime_state(
+            {
+                "runtime": {
+                    "status": "running",
+                    "mode": "application",
+                },
+                "application": {
+                    "active_id": app_id,
+                    "active_pid": process.pid,
+                    "status": "running",
+                    "name": app_name,
+                },
+                "display": {
+                    "connected": True,
+                    "mode": "application_owned",
+                },
+            }
+        )
+
     def handle_select(
         self,
         event: ButtonEvent,
     ) -> None:
-        """KEY_ENTER tap launches; hold stops and returns home."""
+        """KEY_ENTER tap moves down; hold selects; extra hold stops."""
 
         self.log.info(
             "Select button: %s held %.2fs",
@@ -923,7 +1034,7 @@ class ManagerDaemon:
             {
                 "input": {
                     "provider": "lradc",
-                    "action": "select",
+                    "action": "down_or_select",
                     "name": event.name,
                     "held_seconds": event.held_seconds,
                 }
@@ -935,31 +1046,51 @@ class ManagerDaemon:
                 event.held_seconds
                 >= ButtonService.LONG_PRESS_SECONDS
             )
+            is_very_long_press = (
+                event.held_seconds
+                >= ButtonService.VERY_LONG_PRESS_SECONDS
+            )
 
             if (
                 self._app_is_running()
                 and not is_long_press
             ):
                 self.log.info(
-                    "Forwarding Select button to active application"
+                    "Forwarding Down button to active application"
                 )
 
                 button_server.publish(
-                    "select",
+                    "down",
                     "short_press",
                     duration=event.held_seconds,
                 )
                 return
 
-            # Long Enter press is always Home/Stop.
-            if is_long_press:
+            if (
+                self._app_is_running()
+                and is_long_press
+                and not is_very_long_press
+            ):
+                self.log.info(
+                    "Forwarding Select hold to active application"
+                )
+
+                button_server.publish(
+                    "select",
+                    "long_press",
+                    duration=event.held_seconds,
+                )
+                return
+
+            # Extra-long hold remains the recovery path.
+            if is_very_long_press:
                 if (
                     not self.menu_visible
                     or self._app_is_running()
                 ):
                     button_server.publish(
                         "select",
-                        "long_press",
+                        "very_long_press",
                         duration=event.held_seconds,
                     )
 
@@ -986,87 +1117,31 @@ class ManagerDaemon:
 
                 return
 
-            # Ignore short Enter presses while an app is open.
             if not self.menu_visible:
                 self.log.info(
-                    "Ignoring short Enter press while "
+                    "Ignoring short Down press while "
                     "application is running"
                 )
                 return
 
-            selected = self.menu.selected
-            app_id = str(selected["id"])
-            app_name = str(selected["name"])
+            if is_long_press:
+                self._activate_selected_menu_item()
+                return
+
+            selected = self.menu.next()
 
             self.log.info(
-                "Launching selected menu item: %s",
-                app_id,
+                "Selected menu item: %s",
+                selected.get("id"),
             )
 
-            if not selected.get("configured", False):
-                self.show_menu(
-                    f"{app_name}: NOT INSTALLED"
-                )
-                return
-
-            service = self._service_configuration(
-                app_id
+            selected_id = selected.get("id")
+            self.state_publisher.set_launcher_selection(
+                str(selected_id) if selected_id else None
             )
-
-            if self._service_supports_qr_preview(service):
-                self._handle_background_service(service)
-                return
-
-            if (
-                service.get("type")
-                == "background_service"
-            ):
-                self._handle_background_service(
-                    service
-                )
-                return
-
-            self.menu.render(
-                f"Starting {app_name}..."
-            )
-            self.hide_menu()
-
-            process = self.application_manager.launch(
-                service
-            )
-
-            with self._state_lock:
-                self.active_app_id = app_id
-
-            self.log.info(
-                "Started %s with PID %s",
-                app_id,
-                process.pid,
-            )
-
-            self.state_publisher.set_foreground_application(
-                app_id,
-                transition="application_started",
-                publish=False,
-            )
-            self._publish_runtime_state(
-                {
-                    "runtime": {
-                        "status": "running",
-                        "mode": "application",
-                    },
-                    "application": {
-                        "active_id": app_id,
-                        "active_pid": process.pid,
-                        "status": "running",
-                        "name": app_name,
-                    },
-                    "display": {
-                        "connected": True,
-                        "mode": "application_owned",
-                    },
-                }
-            )
+            if hasattr(self.menu, "footer_override"):
+                self.menu.footer_override = self._selection_footer_text(selected)
+            self.menu.render()
 
         except ApplicationAlreadyRunning:
             self.log.warning(

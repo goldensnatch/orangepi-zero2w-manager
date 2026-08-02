@@ -27,6 +27,7 @@ class ButtonService:
     SELECT_CODE = 28       # KEY_ENTER
 
     LONG_PRESS_SECONDS = 1.2
+    VERY_LONG_PRESS_SECONDS = 2.4
     DEBOUNCE_SECONDS = 0.08
 
     def __init__(
@@ -129,7 +130,7 @@ class ButtonService:
             device.name,
         )
         LOGGER.info(
-            "Button mapping: code 28=Select, code 2=Navigate"
+            "Button mapping: KEY_1=Up/Select, KEY_ENTER=Down/Select"
         )
 
         try:

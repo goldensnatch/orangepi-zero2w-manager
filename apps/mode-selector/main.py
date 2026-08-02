@@ -86,7 +86,16 @@ class ModeSelectorApp(RockyButtonApp):
 
     def on_button(self, event: ButtonEvent) -> None:
         with self._lock:
-            if event.button == "navigate" and event.action == "short_press":
+            if event.button == "up" and event.action == "short_press":
+                if self.mode_ids:
+                    self.selected_index = (self.selected_index - 1) % len(self.mode_ids)
+                    self.status_message = None
+                    self.status_until = 0.0
+                    self._dirty = True
+                    LOGGER.info("Selected mode row %d -> %s", self.selected_index, self.selected_mode_id())
+                return
+
+            if event.button == "down" and event.action == "short_press":
                 if self.mode_ids:
                     self.selected_index = (self.selected_index + 1) % len(self.mode_ids)
                     self.status_message = None
@@ -95,14 +104,10 @@ class ModeSelectorApp(RockyButtonApp):
                     LOGGER.info("Selected mode row %d -> %s", self.selected_index, self.selected_mode_id())
                 return
 
-            if event.button == "select" and event.action == "short_press":
+            if event.button == "select" and event.action == "long_press":
                 selected_mode_id = self.selected_mode_id()
                 if selected_mode_id:
                     self.apply_selected_mode(selected_mode_id)
-                return
-
-            if event.button == "select" and event.action == "long_press":
-                LOGGER.info("Long select received; Rocky Runtime should return home")
                 return
 
             LOGGER.info("Ignored button event: %s %s", event.button, event.action)
@@ -199,7 +204,7 @@ class ModeSelectorApp(RockyButtonApp):
             return self.status_message[:38]
         warning_text = "WARN" if self.current_live_warnings else "OK"
         live = self.current_live_label[:10]
-        return f"LIVE {live} {warning_text} | SEL=APPLY"[:38]
+        return f"LIVE {live} {warning_text} | HOLD=APPLY"[:38]
 
     def render_image(self) -> Image.Image:
         image = Image.new("1", (WIDTH, HEIGHT), 255)

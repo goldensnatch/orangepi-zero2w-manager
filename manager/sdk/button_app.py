@@ -21,12 +21,12 @@ class RockyButtonApp(RockyApp):
 
     Available events:
 
-        navigate / short_press
-        select   / short_press
+        up       / short_press
+        down     / short_press
         select   / long_press
 
-    Long Select remains controlled by Rocky Runtime and normally stops
-    the foreground application after the event is broadcast.
+    Very long holds remain controlled by Rocky Runtime and normally stop
+    the foreground application before returning home.
     """
 
     def __init__(
