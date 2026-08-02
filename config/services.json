@@ -186,5 +186,29 @@
     "systemd_service": "klipper",
     "docker_container": null,
     "working_directory": "/opt/zero2w-manager"
+  },
+  "torrentz": {
+    "activate_mode": "torrent_fortress",
+    "background_allowed": false,
+    "command": [
+      "/opt/zero2w-manager/venv/bin/python3",
+      "-m",
+      "apps.torrentz"
+    ],
+    "description": "Torrent privacy and transfer submenu with VPN, qBittorrent, and storage state",
+    "display_owner": true,
+    "environment": {
+      "PYTHONPATH": "/opt/zero2w-manager",
+      "PYTHONUNBUFFERED": "1"
+    },
+    "menu_order": 47,
+    "menu_visible": true,
+    "name": "Torrentz",
+    "network_owner": false,
+    "type": "application",
+    "url": "http://127.0.0.1:8080/",
+    "systemd_service": null,
+    "docker_container": "rocky-transfer-qbittorrent",
+    "working_directory": "/opt/zero2w-manager"
   }
 }
