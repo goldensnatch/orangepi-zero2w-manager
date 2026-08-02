@@ -880,9 +880,7 @@ class ManagerDaemon:
     ) -> bool:
         if self._is_systemd_display_service(service):
             unit = str(service.get("systemd_service") or "").strip()
-            if self._mode_service_status(unit) == "active":
-                return self._kill_systemd_unit_signal(unit, "CONT")
-            return False
+            return self._kill_systemd_unit_signal(unit, "CONT")
 
         return self._signal_service_process_group(service, signal.SIGCONT)
 
@@ -1007,6 +1005,8 @@ class ManagerDaemon:
     def show_menu(
         self,
         message: str | None = None,
+        *,
+        force_full: bool = False,
     ) -> None:
         with self._state_lock:
             if not self.running:
@@ -1019,7 +1019,10 @@ class ManagerDaemon:
                     self.menu.item_formatter = self._menu_item_label
                 if hasattr(self.menu, "footer_override"):
                     self.menu.footer_override = self._selection_footer_text(self.menu.selected if self.menu.items else None)
-                self.menu.render(message)
+                self.menu.render(
+                    message,
+                    force_full=force_full,
+                )
             except Exception:
                 self.menu_visible = False
                 self.log.exception(
@@ -1426,7 +1429,10 @@ class ManagerDaemon:
             return True
 
         time.sleep(0.2)
-        self.show_menu(f"{app_name}: MENU")
+        self.show_menu(
+            f"{app_name}: MENU",
+            force_full=True,
+        )
         return True
 
     def _resume_service_to_foreground(
