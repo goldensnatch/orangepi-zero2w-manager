@@ -2266,7 +2266,7 @@ class ManagerDaemon:
         self,
         service: dict[str, Any],
     ) -> None:
-        """Show the status of an always-running systemd service."""
+        """Show the status of an always-running background service."""
 
         app_name = str(
             service.get("name")
@@ -2274,33 +2274,41 @@ class ManagerDaemon:
             or "Service"
         )
         unit = service.get("systemd_service")
+        container = service.get("docker_container")
         url = service.get("url")
+        status = "unknown"
+        is_running = False
 
-        if not unit:
+        if unit:
+            result = subprocess.run(
+                [
+                    "systemctl",
+                    "is-active",
+                    str(unit),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+
+            status = (
+                result.stdout.strip()
+                or result.stderr.strip()
+                or "unknown"
+            )
+            is_running = result.returncode == 0 and status == "active"
+        elif container:
+            status = self._docker_container_health(str(container))
+            is_running = status in {"healthy", "running"}
+        else:
             self.show_menu(
                 f"{app_name}: SERVICE NOT SET"
             )
             return
 
-        result = subprocess.run(
-            [
-                "systemctl",
-                "is-active",
-                str(unit),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-
-        status = (
-            result.stdout.strip()
-            or result.stderr.strip()
-            or "unknown"
-        )
         qr_target = self._resolve_qr_target(str(service.get('id') or app_name.lower()))
-        if result.returncode == 0 and status == "active":
+        if is_running:
             if qr_target:
                 public_url = self._publicize_service_url(str(url)) if url else qr_target
                 self.log.info(
@@ -2327,7 +2335,7 @@ class ManagerDaemon:
 
         self.log.info(
             "Background service %s status: %s",
-            unit,
+            str(unit or container or app_name),
             status,
         )
         self.show_menu(message)
