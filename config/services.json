@@ -62,6 +62,12 @@
       "bettercap.service",
       "pwnagotchi.service"
     ],
+    "pause_services": [
+      "pwnagotchi.service"
+    ],
+    "resume_services": [
+      "pwnagotchi.service"
+    ],
     "stop_services": [
       "pwnagotchi.service",
       "bettercap.service"

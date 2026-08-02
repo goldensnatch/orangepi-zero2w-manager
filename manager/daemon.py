@@ -912,6 +912,13 @@ class ManagerDaemon:
         service: dict[str, Any],
     ) -> bool:
         if self._is_systemd_display_service(service):
+            pause_units = service.get("pause_services")
+            if isinstance(pause_units, list) and pause_units:
+                return self._run_systemctl(
+                    "stop",
+                    [str(unit) for unit in pause_units],
+                )
+
             unit = str(service.get("systemd_service") or "").strip()
             return self._kill_systemd_unit_signal(unit, "STOP")
 
@@ -922,6 +929,13 @@ class ManagerDaemon:
         service: dict[str, Any],
     ) -> bool:
         if self._is_systemd_display_service(service):
+            resume_units = service.get("resume_services")
+            if isinstance(resume_units, list) and resume_units:
+                return self._run_systemctl(
+                    "start",
+                    [str(unit) for unit in resume_units],
+                )
+
             unit = str(service.get("systemd_service") or "").strip()
             return self._kill_systemd_unit_signal(unit, "CONT")
 
