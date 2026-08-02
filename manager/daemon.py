@@ -334,6 +334,43 @@ class ManagerDaemon:
         except Exception:
             return 'unknown'
 
+    def _run_systemctl(
+        self,
+        action: str,
+        units: list[str],
+        *,
+        timeout: int = 30,
+    ) -> bool:
+        filtered = [str(unit).strip() for unit in units if str(unit).strip()]
+        if not filtered:
+            return True
+
+        try:
+            result = subprocess.run(
+                ["systemctl", action, *filtered],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+            if result.returncode == 0:
+                return True
+
+            self.log.warning(
+                "systemctl %s failed for %s: %s",
+                action,
+                ", ".join(filtered),
+                result.stderr.strip() or result.stdout.strip() or result.returncode,
+            )
+            return False
+        except Exception:
+            self.log.exception(
+                "systemctl %s failed for %s",
+                action,
+                ", ".join(filtered),
+            )
+            return False
+
     def _load_web_service_cache(self) -> dict[str, Any]:
         return self._read_json_file(WEB_SERVICE_CACHE_PATH, {})
 
@@ -475,6 +512,8 @@ class ManagerDaemon:
     def _service_supports_qr_preview(self, service: dict[str, Any] | None) -> bool:
         if not isinstance(service, dict):
             return False
+        if self._is_systemd_display_service(service):
+            return False
         app_id = service.get('id')
         if app_id and self._resolve_qr_target(str(app_id)):
             return True
@@ -534,6 +573,10 @@ class ManagerDaemon:
     def _selection_action_hint(self, service: dict[str, Any]) -> str:
         if self._service_supports_qr_preview(service):
             return "HOLD=QR"
+        if self._is_systemd_display_service(service):
+            if service.get("display_switch_target"):
+                return "HOLD=OPEN SWAP"
+            return "HOLD=OPEN"
         if service.get("type") == "background_service":
             return "HOLD=STATUS"
         return "UP/DN BROWSE HOLD OPEN"
@@ -541,6 +584,18 @@ class ManagerDaemon:
     def _service_status_hint(self, service: dict[str, Any]) -> str:
         service_type = str(service.get("type") or "application")
         app_id = str(service.get("id") or "")
+
+        if self._is_systemd_display_service(service):
+            if self.active_app_id == app_id and self._app_is_running():
+                return "LIVE"
+
+            unit = str(service.get("systemd_service") or "")
+            status = self._mode_service_status(unit) if unit else "unknown"
+            if status == "active":
+                return "READY"
+            if not service.get("configured", True):
+                return "MISSING"
+            return status.upper()[:12]
 
         if service_type == "background_service":
             if self._resolve_qr_target(app_id):
@@ -589,8 +644,40 @@ class ManagerDaemon:
         signal.signal(signal.SIGINT, self.shutdown)
         signal.signal(signal.SIGTERM, self.shutdown)
 
+    def _is_systemd_display_service(
+        self,
+        service: dict[str, Any] | None,
+    ) -> bool:
+        return bool(
+            isinstance(service, dict)
+            and service.get("display_owner")
+            and service.get("systemd_service")
+            and not service.get("command")
+        )
+
+    def _foreground_systemd_app_running(self) -> bool:
+        if not self.active_app_id:
+            return False
+
+        try:
+            service = self._service_configuration(self.active_app_id)
+        except Exception:
+            return False
+
+        if not self._is_systemd_display_service(service):
+            return False
+
+        unit = str(service.get("systemd_service") or "").strip()
+        if not unit:
+            return False
+
+        return self._mode_service_status(unit) == "active"
+
     def _app_is_running(self) -> bool:
-        return self.application_manager.is_running
+        return (
+            self.application_manager.is_running
+            or self._foreground_systemd_app_running()
+        )
 
     def _service_configuration(
         self,
@@ -609,6 +696,22 @@ class ManagerDaemon:
         service["id"] = app_id
 
         return service
+
+    def _companion_display_target(
+        self,
+        app_id: str | None,
+    ) -> str | None:
+        if not app_id:
+            return None
+        try:
+            service = self._service_configuration(app_id)
+        except Exception:
+            return None
+
+        target = service.get("display_switch_target")
+        if not isinstance(target, str) or not target.strip():
+            return None
+        return target.strip()
 
     def _primary_lan_ip(self) -> str:
         try:
@@ -758,6 +861,14 @@ class ManagerDaemon:
         """KEY_1 tap moves up; hold selects; extra hold stops."""
 
         if self._app_is_running() or not self.menu_visible:
+            if (
+                not self.menu_visible
+                and event.held_seconds >= ButtonService.LONG_PRESS_SECONDS
+                and event.held_seconds < ButtonService.VERY_LONG_PRESS_SECONDS
+                and self._toggle_companion_display()
+            ):
+                return
+
             self.log.info(
                 "Forwarding Up/Select button to active application"
             )
@@ -866,10 +977,33 @@ class ManagerDaemon:
             self._manual_stop_in_progress = True
 
         try:
+            if self.active_app_id:
+                try:
+                    service = self._service_configuration(self.active_app_id)
+                except Exception:
+                    service = None
+
+                if self._is_systemd_display_service(service):
+                    return 0 if self._stop_systemd_display_service(service) else 1
+
             return self.application_manager.stop()
         finally:
             with self._state_lock:
                 self._manual_stop_in_progress = False
+
+    def _stop_systemd_display_service(
+        self,
+        service: dict[str, Any],
+    ) -> bool:
+        stop_units = service.get("stop_services")
+        if not isinstance(stop_units, list) or not stop_units:
+            primary = str(service.get("systemd_service") or "").strip()
+            stop_units = [primary] if primary else []
+
+        return self._run_systemctl(
+            "stop",
+            [str(unit) for unit in stop_units],
+        )
 
     def _handle_background_service(
         self,
@@ -974,6 +1108,114 @@ class ManagerDaemon:
             )
             return
 
+        self._activate_service(service)
+
+    def _activate_systemd_display_service(
+        self,
+        service: dict[str, Any],
+    ) -> None:
+        app_id = str(service.get("id") or "service")
+        app_name = str(service.get("name") or app_id)
+        start_units = service.get("start_services")
+
+        if not isinstance(start_units, list) or not start_units:
+            primary = str(service.get("systemd_service") or "").strip()
+            start_units = [primary] if primary else []
+
+        self.menu.render(
+            f"Starting {app_name}..."
+        )
+        self.hide_menu()
+
+        if not self._run_systemctl(
+            "start",
+            [str(unit) for unit in start_units],
+        ):
+            self.show_menu(
+                f"{app_name}: START FAILED"
+            )
+            return
+
+        with self._state_lock:
+            self.active_app_id = app_id
+
+        self.log.info(
+            "Activated systemd display service: %s",
+            app_id,
+        )
+
+        self.state_publisher.set_foreground_application(
+            app_id,
+            transition="application_started",
+            publish=False,
+        )
+        self._publish_runtime_state(
+            {
+                "runtime": {
+                    "status": "running",
+                    "mode": "application",
+                },
+                "application": {
+                    "active_id": app_id,
+                    "active_pid": None,
+                    "status": "running",
+                    "name": app_name,
+                    "owner": "systemd",
+                },
+                "display": {
+                    "connected": True,
+                    "mode": "application_owned",
+                },
+            }
+        )
+
+    def _toggle_companion_display(self) -> bool:
+        source_id = self.active_app_id
+        target_id = self._companion_display_target(source_id)
+        if not source_id or not target_id:
+            return False
+
+        self.log.info(
+            "Toggling companion display from %s to %s",
+            source_id,
+            target_id,
+        )
+
+        self._stop_active_application()
+        time.sleep(0.75)
+
+        try:
+            target_service = self._service_configuration(target_id)
+        except Exception:
+            self.show_menu(
+                f"Switch target missing: {target_id}"
+            )
+            return True
+
+        try:
+            self._activate_service(target_service)
+        except Exception:
+            self.log.exception(
+                "Companion display toggle failed: %s -> %s",
+                source_id,
+                target_id,
+            )
+            self.show_menu(
+                f"Switch failed: {target_id}"
+            )
+        return True
+
+    def _activate_service(
+        self,
+        service: dict[str, Any],
+    ) -> None:
+        if self._is_systemd_display_service(service):
+            self._activate_systemd_display_service(service)
+            return
+
+        app_id = str(service.get("id") or "")
+        app_name = str(service.get("name") or app_id or "App")
+
         self.menu.render(
             f"Starting {app_name}..."
         )
@@ -1052,6 +1294,14 @@ class ManagerDaemon:
                 event.held_seconds
                 >= ButtonService.VERY_LONG_PRESS_SECONDS
             )
+
+            if (
+                not self.menu_visible
+                and is_long_press
+                and not is_very_long_press
+                and self._toggle_companion_display()
+            ):
+                return
 
             if (
                 self._app_is_running()

@@ -47,13 +47,27 @@
   "pwnagotchi": {
     "background_allowed": false,
     "command": null,
+    "configured": true,
     "description": "Wireless learning companion",
     "display_owner": true,
+    "display_switch_target": "ragnar",
     "environment": {},
+    "installed_path": "/opt/pwnagotchi",
     "menu_order": 20,
     "menu_visible": true,
     "name": "Pwnagotchi",
     "network_owner": true,
+    "start_services": [
+      "bettercap.service",
+      "pwnagotchi.service",
+      "ragnar-swap-button.service"
+    ],
+    "stop_services": [
+      "ragnar-swap-button.service",
+      "pwnagotchi.service",
+      "bettercap.service"
+    ],
+    "systemd_service": "pwnagotchi.service",
     "working_directory": "/opt/pwnagotchi/app"
   },
   "ragnar": {
@@ -64,6 +78,7 @@
     ],
     "description": "Network discovery and analysis",
     "display_owner": true,
+    "display_switch_target": "pwnagotchi",
     "environment": {
       "HOME": "/opt/ragnar",
       "PYTHONPATH": "/opt/ragnar/app",
