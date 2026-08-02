@@ -1306,6 +1306,26 @@ class ManagerDaemon:
 
         return "APP"
 
+    def _service_is_configured(
+        self,
+        service: dict[str, Any] | None,
+    ) -> bool:
+        if not isinstance(service, dict):
+            return False
+        explicit = service.get("configured")
+        if explicit is not None:
+            return bool(explicit)
+        return bool(
+            service.get("command") is not None
+            or service.get("systemd_service")
+            or service.get("docker_container")
+            or service.get("installed_path")
+            or (
+                str(service.get("type") or "").strip() == "background_service"
+                and service.get("url")
+            )
+        )
+
     def _menu_item_label(self, item: dict[str, Any], _is_selected: bool, _index: int) -> str:
         if str(item.get("id") or "") == CURRENT_MODE_MENU_ITEM_ID:
             payload = self._resolve_mode_payload()
@@ -2354,15 +2374,14 @@ class ManagerDaemon:
             app_id,
         )
 
-        if not selected.get("configured", False):
+        service = self._service_configuration(
+            app_id
+        )
+        if not self._service_is_configured(service):
             self.show_menu(
                 f"{app_name}: NOT INSTALLED"
             )
             return
-
-        service = self._service_configuration(
-            app_id
-        )
         self._apply_service_activation_mode(service)
 
         if self._is_resident_display_app(service):
