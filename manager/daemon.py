@@ -31,6 +31,8 @@ PROXY_TOKEN_TTL_SECONDS = int(os.environ.get('ROCKY_WEB_PROXY_TOKEN_TTL_SECONDS'
 MODE_CATALOG_PATH = Path('/opt/zero2w-manager/runtime/config/modes.json')
 CURRENT_MODE_REQUEST_PATH = Path('/opt/zero2w-manager/runtime/config/current-mode.json')
 WEB_SERVICE_CACHE_PATH = Path('/opt/zero2w-manager/runtime/config/web-service-cache.json')
+ISP_PREP_REQUEST_PATH = Path('/run/rocky/isp-prep-request.json')
+HARDWARE_PREP_STATE_PATH = Path('/run/rocky/hardware-prep-state.json')
 DEFAULT_MODE_CATALOG = {'version': 1, 'modes': [{'mode_id': 'safe', 'label': 'Safe Mode', 'description': 'Minimal known-good Rocky state.', 'category': 'baseline', 'network': {'profile': 'lan_only', 'vpn_required': False, 'vpn_provider': 'none', 'mobile_exit_node': False, 'allow_lan_admin': True, 'allow_wireguard_admin': True, 'allow_public_admin': False, 'firewall_policy': 'strict', 'dns_mode': 'router_default', 'mac_randomization': False, 'public_network_posture': 'cautious'}, 'dns': {'provider': 'system', 'serve_lan': False, 'serve_wireguard_clients': False, 'upstream_mode': 'vpn_preferred', 'ad_blocking': False, 'safe_search': False, 'blocklists_profile': 'none'}, 'admin': {'rocky_admin': {'enabled': True, 'lan': True, 'wireguard': True, 'public': False}, 'qb_webui': {'enabled': False, 'lan': False, 'wireguard': False}, 'terminal': {'enabled': True}, 'auth_profile': 'standard'}, 'transfer': {'enabled': False, 'client': 'qbittorrent', 'vpn_enforced': False, 'kill_switch': True, 'webui_exposure': 'none', 'privacy_profile': 'strict_off', 'bittorrent': {'anonymous_mode': False, 'force_encryption': False, 'dht': False, 'pex': False, 'lsd': False, 'upnp': False, 'fixed_port': 6881, 'random_port': False, 'port_forwarding': False}}, 'portable': {'enabled': False, 'hotspot_enabled': False, 'hotspot_ssid': None, 'captive_portal': False, 'passive_collection': False, 'active_collection': False, 'storage_capture': False}, 'power': {'profile': 'normal', 'suspend_nonessential_services': True, 'reduced_polling': True, 'display_refresh_policy': 'normal', 'radios_policy': 'normal'}, 'pikvm': {'policy': 'auto', 'require_minipc_presence': True, 'auto_disable_when_disconnected': True}, 'display': {'surface': 'browser_and_epaper', 'epaper_menu_enabled': True, 'epaper_qr_behavior': 'mode_aware', 'test_path': 'zero2w_manager_menu'}, 'ui': {'warning_level': 'normal', 'reversible_to': 'safe', 'color_hint': 'blue', 'expose_advanced_toggles': False}}, {'mode_id': 'torrent_fortress', 'label': 'Torrent Fortress', 'description': 'Strongest torrent/privacy posture with Proton-enforced transfer path.', 'category': 'privacy', 'network': {'profile': 'wireguard_admin', 'vpn_required': True, 'vpn_provider': 'protonvpn', 'mobile_exit_node': False, 'allow_lan_admin': True, 'allow_wireguard_admin': True, 'allow_public_admin': False, 'firewall_policy': 'strict', 'dns_mode': 'pihole_lan_and_wg', 'mac_randomization': False, 'public_network_posture': 'cautious'}, 'dns': {'provider': 'pihole', 'serve_lan': True, 'serve_wireguard_clients': True, 'upstream_mode': 'vpn_preferred', 'ad_blocking': True, 'safe_search': False, 'blocklists_profile': 'balanced'}, 'admin': {'rocky_admin': {'enabled': True, 'lan': True, 'wireguard': True, 'public': False}, 'qb_webui': {'enabled': True, 'lan': True, 'wireguard': True}, 'terminal': {'enabled': True}, 'auth_profile': 'hardened'}, 'transfer': {'enabled': True, 'client': 'qbittorrent', 'vpn_enforced': True, 'kill_switch': True, 'webui_exposure': 'lan_and_wireguard', 'privacy_profile': 'fortress', 'bittorrent': {'anonymous_mode': True, 'force_encryption': True, 'dht': False, 'pex': False, 'lsd': False, 'upnp': False, 'fixed_port': 6881, 'random_port': False, 'port_forwarding': False}}, 'portable': {'enabled': False, 'hotspot_enabled': False, 'hotspot_ssid': None, 'captive_portal': False, 'passive_collection': False, 'active_collection': False, 'storage_capture': False}, 'power': {'profile': 'normal', 'suspend_nonessential_services': False, 'reduced_polling': False, 'display_refresh_policy': 'normal', 'radios_policy': 'normal'}, 'pikvm': {'policy': 'auto', 'require_minipc_presence': True, 'auto_disable_when_disconnected': True}, 'display': {'surface': 'browser_and_epaper', 'epaper_menu_enabled': True, 'epaper_qr_behavior': 'mode_aware', 'test_path': 'zero2w_manager_menu'}, 'ui': {'warning_level': 'caution', 'reversible_to': 'safe', 'color_hint': 'red', 'expose_advanced_toggles': False}}, {'mode_id': 'pihole_only', 'label': 'Pi-hole Only', 'description': 'Pi-hole DNS active for LAN ad-blocking. No VPN, no transfer.', 'category': 'utility', 'network': {'profile': 'lan_only', 'vpn_required': False, 'vpn_provider': 'none', 'mobile_exit_node': False, 'allow_lan_admin': True, 'allow_wireguard_admin': True, 'allow_public_admin': False, 'firewall_policy': 'strict', 'dns_mode': 'pihole_lan_only', 'mac_randomization': False, 'public_network_posture': 'cautious'}, 'dns': {'provider': 'pihole', 'serve_lan': True, 'serve_wireguard_clients': False, 'upstream_mode': 'direct', 'ad_blocking': True, 'safe_search': False, 'blocklists_profile': 'balanced'}, 'admin': {'rocky_admin': {'enabled': True, 'lan': True, 'wireguard': True, 'public': False}, 'qb_webui': {'enabled': False, 'lan': False, 'wireguard': False}, 'terminal': {'enabled': True}, 'auth_profile': 'standard'}, 'transfer': {'enabled': False, 'client': 'qbittorrent', 'vpn_enforced': False, 'kill_switch': False, 'webui_exposure': 'none', 'privacy_profile': 'off', 'bittorrent': {'anonymous_mode': False, 'force_encryption': False, 'dht': False, 'pex': False, 'lsd': False, 'upnp': False, 'fixed_port': 6881, 'random_port': False, 'port_forwarding': False}}, 'portable': {'enabled': False, 'hotspot_enabled': False, 'hotspot_ssid': None, 'captive_portal': False, 'passive_collection': False, 'active_collection': False, 'storage_capture': False}, 'power': {'profile': 'normal', 'suspend_nonessential_services': False, 'reduced_polling': False, 'display_refresh_policy': 'normal', 'radios_policy': 'normal'}, 'pikvm': {'policy': 'auto', 'require_minipc_presence': True, 'auto_disable_when_disconnected': True}, 'display': {'surface': 'browser_and_epaper', 'epaper_menu_enabled': True, 'epaper_qr_behavior': 'mode_aware', 'test_path': 'zero2w_manager_menu'}, 'ui': {'warning_level': 'normal', 'reversible_to': 'safe', 'color_hint': 'green', 'expose_advanced_toggles': False}}, {'mode_id': 'print_lab', 'label': 'Print Lab', 'description': '3D printer apps active. LAN-only, no VPN, no torrent.', 'category': 'utility', 'network': {'profile': 'lan_only', 'vpn_required': False, 'vpn_provider': 'none', 'mobile_exit_node': False, 'allow_lan_admin': True, 'allow_wireguard_admin': True, 'allow_public_admin': False, 'firewall_policy': 'relaxed', 'dns_mode': 'router_default', 'mac_randomization': False, 'public_network_posture': 'cautious'}, 'dns': {'provider': 'system', 'serve_lan': False, 'serve_wireguard_clients': False, 'upstream_mode': 'direct', 'ad_blocking': False, 'safe_search': False, 'blocklists_profile': 'none'}, 'admin': {'rocky_admin': {'enabled': True, 'lan': True, 'wireguard': True, 'public': False}, 'qb_webui': {'enabled': False, 'lan': False, 'wireguard': False}, 'terminal': {'enabled': True}, 'auth_profile': 'standard'}, 'transfer': {'enabled': False, 'client': 'qbittorrent', 'vpn_enforced': False, 'kill_switch': False, 'webui_exposure': 'none', 'privacy_profile': 'off', 'bittorrent': {'anonymous_mode': False, 'force_encryption': False, 'dht': False, 'pex': False, 'lsd': False, 'upnp': False, 'fixed_port': 6881, 'random_port': False, 'port_forwarding': False}}, 'portable': {'enabled': False, 'hotspot_enabled': False, 'hotspot_ssid': None, 'captive_portal': False, 'passive_collection': False, 'active_collection': False, 'storage_capture': False}, 'power': {'profile': 'normal', 'suspend_nonessential_services': False, 'reduced_polling': False, 'display_refresh_policy': 'normal', 'radios_policy': 'normal'}, 'pikvm': {'policy': 'auto', 'require_minipc_presence': True, 'auto_disable_when_disconnected': True}, 'display': {'surface': 'browser_and_epaper', 'epaper_menu_enabled': True, 'epaper_qr_behavior': 'mode_aware', 'test_path': 'zero2w_manager_menu'}, 'ui': {'warning_level': 'normal', 'reversible_to': 'safe', 'color_hint': 'yellow', 'expose_advanced_toggles': False}}, {'mode_id': 'daily_driver', 'label': 'Daily Driver', 'description': 'Balanced everyday mode. Pi-hole on, no torrent, LAN admin.', 'category': 'baseline', 'network': {'profile': 'lan_only', 'vpn_required': False, 'vpn_provider': 'none', 'mobile_exit_node': False, 'allow_lan_admin': True, 'allow_wireguard_admin': True, 'allow_public_admin': False, 'firewall_policy': 'standard', 'dns_mode': 'pihole_lan_only', 'mac_randomization': False, 'public_network_posture': 'cautious'}, 'dns': {'provider': 'pihole', 'serve_lan': True, 'serve_wireguard_clients': True, 'upstream_mode': 'direct', 'ad_blocking': True, 'safe_search': False, 'blocklists_profile': 'balanced'}, 'admin': {'rocky_admin': {'enabled': True, 'lan': True, 'wireguard': True, 'public': False}, 'qb_webui': {'enabled': False, 'lan': False, 'wireguard': False}, 'terminal': {'enabled': True}, 'auth_profile': 'standard'}, 'transfer': {'enabled': False, 'client': 'qbittorrent', 'vpn_enforced': False, 'kill_switch': False, 'webui_exposure': 'none', 'privacy_profile': 'off', 'bittorrent': {'anonymous_mode': False, 'force_encryption': False, 'dht': False, 'pex': False, 'lsd': False, 'upnp': False, 'fixed_port': 6881, 'random_port': False, 'port_forwarding': False}}, 'portable': {'enabled': False, 'hotspot_enabled': False, 'hotspot_ssid': None, 'captive_portal': False, 'passive_collection': False, 'active_collection': False, 'storage_capture': False}, 'power': {'profile': 'normal', 'suspend_nonessential_services': False, 'reduced_polling': False, 'display_refresh_policy': 'normal', 'radios_policy': 'normal'}, 'pikvm': {'policy': 'auto', 'require_minipc_presence': True, 'auto_disable_when_disconnected': True}, 'display': {'surface': 'browser_and_epaper', 'epaper_menu_enabled': True, 'epaper_qr_behavior': 'mode_aware', 'test_path': 'zero2w_manager_menu'}, 'ui': {'warning_level': 'normal', 'reversible_to': 'safe', 'color_hint': 'blue', 'expose_advanced_toggles': False}}]}
 DEFAULT_CURRENT_MODE_REQUEST = {'version': 1, 'selected_mode_id': 'torrent_fortress', 'previous_mode_id': 'safe', 'requested_at': '2026-07-26T20:45:00Z', 'requested_by': 'operator', 'reason': 'Enable the strongest current torrent/privacy posture while preserving Rocky Admin access on LAN and WireGuard.', 'override_flags': {'mobile_exit_node': False, 'pikvm_policy': 'auto', 'epaper_menu_enabled': True, 'epaper_test_path': 'zero2w_manager_menu', 'allow_public_admin': False}}
 
@@ -82,6 +84,8 @@ class ManagerDaemon:
         self._last_config_reconcile_at = 0.0
         self._last_mode_signature: str | None = None
 
+        self._clear_isp_prep_request()
+        self._clear_hardware_prep_state()
         self._publish_reconciled_infrastructure_state(force_refresh=True)
 
     def _infrastructure_state(
@@ -570,6 +574,55 @@ class ManagerDaemon:
             footer = self._mode_footer_text()
         return footer[:76]
 
+    def _load_isp_prep_request(self) -> dict[str, Any] | None:
+        try:
+            if not ISP_PREP_REQUEST_PATH.is_file():
+                return None
+            payload = json.loads(
+                ISP_PREP_REQUEST_PATH.read_text(encoding='utf-8')
+            )
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            self.log.exception(
+                "Failed to load ISP prep request"
+            )
+        return None
+
+    def _clear_isp_prep_request(self) -> None:
+        try:
+            ISP_PREP_REQUEST_PATH.unlink()
+        except FileNotFoundError:
+            return
+        except Exception:
+            self.log.exception(
+                "Failed to clear ISP prep request"
+            )
+
+    def _clear_hardware_prep_state(self) -> None:
+        try:
+            HARDWARE_PREP_STATE_PATH.unlink()
+        except FileNotFoundError:
+            return
+        except Exception:
+            self.log.exception(
+                "Failed to clear hardware prep state"
+            )
+
+    def _consume_isp_prep_request(self) -> dict[str, Any] | None:
+        request = self._load_isp_prep_request()
+        if not isinstance(request, dict):
+            return None
+
+        action = str(request.get("action") or "").strip()
+        app_id = str(request.get("app_id") or "").strip()
+
+        if action != "enter_isp_prep" or app_id != str(self.active_app_id or ""):
+            return None
+
+        self._clear_isp_prep_request()
+        return request
+
     def _selection_action_hint(self, service: dict[str, Any]) -> str:
         if self._service_supports_qr_preview(service):
             return "HOLD=QR"
@@ -765,6 +818,8 @@ class ManagerDaemon:
             if not self.running:
                 return
 
+            self._clear_hardware_prep_state()
+
             try:
                 if hasattr(self.menu, "item_formatter"):
                     self.menu.item_formatter = self._menu_item_label
@@ -874,11 +929,18 @@ class ManagerDaemon:
             )
 
             if event.held_seconds >= ButtonService.VERY_LONG_PRESS_SECONDS:
+                prep_request = self._consume_isp_prep_request()
                 button_server.publish(
                     "select",
                     "very_long_press",
                     duration=event.held_seconds,
                 )
+                if prep_request:
+                    self._enter_isp_prep_mode(
+                        prep_request,
+                        held_seconds=event.held_seconds,
+                    )
+                    return
                 if self._app_is_running():
                     self.log.info(
                         "Stopping active application via very long Up/Select hold"
@@ -990,6 +1052,91 @@ class ManagerDaemon:
         finally:
             with self._state_lock:
                 self._manual_stop_in_progress = False
+
+    def _enter_isp_prep_mode(
+        self,
+        request: dict[str, Any],
+        *,
+        held_seconds: float,
+    ) -> None:
+        active_app_id = str(self.active_app_id or request.get("app_id") or "application")
+        requested_by = str(request.get("requested_by") or "unknown")
+
+        self.log.info(
+            "Entering ISP prep mode from %s via %.2fs hold",
+            active_app_id,
+            held_seconds,
+        )
+
+        result = self._stop_active_application()
+
+        self.log.info(
+            "ISP prep stop return code: %s",
+            result,
+        )
+
+        time.sleep(0.75)
+
+        with self._state_lock:
+            self.menu_visible = False
+            self.active_app_id = None
+
+        payload = {
+            "entered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "requested_by": requested_by,
+            "source_application": active_app_id,
+            "hold_seconds": round(float(held_seconds), 3),
+            "notes": request.get("notes", {}),
+        }
+
+        try:
+            HARDWARE_PREP_STATE_PATH.parent.mkdir(mode=0o775, parents=True, exist_ok=True)
+            HARDWARE_PREP_STATE_PATH.write_text(
+                json.dumps(payload, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            self.log.exception(
+                "Failed to persist hardware prep state"
+            )
+
+        self.state_publisher.set_foreground_application(
+            None,
+            transition="hardware_prep_entered",
+            publish=False,
+        )
+        self.state_publisher.set_launcher_selection(
+            None,
+            publish=False,
+        )
+        self._publish_runtime_state(
+            {
+                "runtime": {
+                    "status": "running",
+                    "mode": "hardware_prep",
+                },
+                "foreground_application": None,
+                "launcher": {
+                    "active": False,
+                    "selected_application": None,
+                },
+                "display": {
+                    "connected": False,
+                    "mode": "released_for_hardware_prep",
+                },
+                "application": {
+                    "active_id": None,
+                    "active_pid": None,
+                    "status": "hardware_prep",
+                    "last_id": active_app_id,
+                },
+                "hardware_prep": {
+                    "active": True,
+                    "action": "isp_boot",
+                    **payload,
+                },
+            }
+        )
 
     def _stop_systemd_display_service(
         self,
@@ -1340,11 +1487,19 @@ class ManagerDaemon:
                     not self.menu_visible
                     or self._app_is_running()
                 ):
+                    prep_request = self._consume_isp_prep_request()
                     button_server.publish(
                         "select",
                         "very_long_press",
                         duration=event.held_seconds,
                     )
+
+                    if prep_request:
+                        self._enter_isp_prep_mode(
+                            prep_request,
+                            held_seconds=event.held_seconds,
+                        )
+                        return
 
                     self.log.info(
                         "Stopping active application"

@@ -146,18 +146,26 @@
     "docker_container": "rocky-pihole"
   },
   "3d_printer": {
-    "background_allowed": true,
-    "command": null,
-    "description": "Klipper + Mainsail 3D printer control",
-    "display_owner": false,
-    "environment": {},
+    "background_allowed": false,
+    "command": [
+      "/opt/zero2w-manager/venv/bin/python3",
+      "-m",
+      "apps.print_lab"
+    ],
+    "description": "Print Lab submenu with Mainsail, Klipper, and ISP prep tools",
+    "display_owner": true,
+    "environment": {
+      "PYTHONPATH": "/opt/zero2w-manager",
+      "PYTHONUNBUFFERED": "1"
+    },
     "menu_order": 46,
     "menu_visible": true,
     "name": "3D Printer",
     "network_owner": false,
-    "type": "background_service",
+    "type": "application",
     "url": "http://127.0.0.1:84/",
     "systemd_service": "klipper",
-    "docker_container": null
+    "docker_container": null,
+    "working_directory": "/opt/zero2w-manager"
   }
 }
