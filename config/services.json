@@ -59,11 +59,9 @@
     "network_owner": true,
     "start_services": [
       "bettercap.service",
-      "pwnagotchi.service",
-      "ragnar-swap-button.service"
+      "pwnagotchi.service"
     ],
     "stop_services": [
-      "ragnar-swap-button.service",
       "pwnagotchi.service",
       "bettercap.service"
     ],

@@ -631,7 +631,7 @@ class ManagerDaemon:
             return "HOLD=QR"
         if self._is_systemd_display_service(service):
             if service.get("display_switch_target"):
-                return "HOLD=OPEN SWAP"
+                return "HOLD=OPEN TAP=SWAP"
             return "HOLD=OPEN"
         if service.get("type") == "background_service":
             return "HOLD=STATUS"
@@ -768,6 +768,20 @@ class ManagerDaemon:
         if not isinstance(target, str) or not target.strip():
             return None
         return target.strip()
+
+    def _should_short_press_swap_active_display(self) -> bool:
+        if self.menu_visible or not self.active_app_id:
+            return False
+
+        try:
+            service = self._service_configuration(self.active_app_id)
+        except Exception:
+            return False
+
+        return bool(
+            self._is_systemd_display_service(service)
+            and self._companion_display_target(self.active_app_id)
+        )
 
     def _primary_lan_ip(self) -> str:
         try:
@@ -919,6 +933,14 @@ class ManagerDaemon:
         """KEY_1 tap moves up; hold selects; extra hold stops."""
 
         if self._app_is_running() or not self.menu_visible:
+            if (
+                not self.menu_visible
+                and event.held_seconds < ButtonService.LONG_PRESS_SECONDS
+                and self._should_short_press_swap_active_display()
+                and self._toggle_companion_display()
+            ):
+                return
+
             if (
                 not self.menu_visible
                 and event.held_seconds >= ButtonService.LONG_PRESS_SECONDS
@@ -1444,6 +1466,14 @@ class ManagerDaemon:
                 event.held_seconds
                 >= ButtonService.VERY_LONG_PRESS_SECONDS
             )
+
+            if (
+                not self.menu_visible
+                and not is_long_press
+                and self._should_short_press_swap_active_display()
+                and self._toggle_companion_display()
+            ):
+                return
 
             if (
                 not self.menu_visible
