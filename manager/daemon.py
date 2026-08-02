@@ -997,6 +997,19 @@ class ManagerDaemon:
             and self._companion_display_target(self.active_app_id)
         )
 
+    def _handle_resident_display_button(
+        self,
+        event: ButtonEvent,
+    ) -> bool:
+        service = self._active_resident_display_service()
+        if not service:
+            return False
+
+        if event.held_seconds < ButtonService.LONG_PRESS_SECONDS:
+            return self._toggle_companion_display()
+
+        return self._park_active_display_to_menu()
+
     def _primary_lan_ip(self) -> str:
         try:
             probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1161,6 +1174,9 @@ class ManagerDaemon:
                 "Ignoring navigation while %s settles onto the display",
                 self.active_app_id,
             )
+            return
+
+        if self._handle_resident_display_button(event):
             return
 
         if self._app_is_running() or not self.menu_visible:
@@ -1906,6 +1922,9 @@ class ManagerDaemon:
                 event.held_seconds
                 >= ButtonService.VERY_LONG_PRESS_SECONDS
             )
+
+            if self._handle_resident_display_button(event):
+                return
 
             if (
                 not self.menu_visible
