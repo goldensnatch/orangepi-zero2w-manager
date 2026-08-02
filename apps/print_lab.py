@@ -306,13 +306,12 @@ class PrintLabApp(RockyButtonApp):
             ])
         elif self.page == "isp_pins":
             self._draw_lines(draw, font, "ISP PINS", [
-                "MOSI   MISO   SCK",
-                "RESET  VCC    GND",
-                "",
-                "Use VCC only if",
-                "your programmer needs it.",
-                "",
-                "UP/DN returns.",
+                "MOSI P19  GPIO231",
+                "MISO P21  GPIO232",
+                "SCK  P23  GPIO230",
+                "RST  P22  GPIO262",
+                "3V3  P17  GND P20",
+                "Shift MISO if target=5V",
             ])
         elif self.page == "isp_prep_confirm":
             self._draw_lines(draw, font, "ISP PREP", [
