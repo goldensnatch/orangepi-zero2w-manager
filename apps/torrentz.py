@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import socket
@@ -8,7 +9,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
+from urllib.request import urlopen
 
 from PIL import Image, ImageDraw, ImageFont
 from zero2w_epaper import Display
@@ -80,11 +82,14 @@ class TorrentzApp(RockyButtonApp):
         self._last_render_signature: str | None = None
         self._last_state_poll = 0.0
         self._state_snapshot: dict[str, Any] = {}
+        self._qr_target: str | None = None
+        self._qr_image: Image.Image | None = None
 
     def setup(self) -> None:
         self.display_context = Display()
         self.display = self.display_context.__enter__()
         self._poll_state(force=True)
+        self._refresh_qr_cache()
         self._render_if_needed(force=True)
         LOGGER.info("Torrentz started")
 
@@ -187,8 +192,11 @@ class TorrentzApp(RockyButtonApp):
             LOGGER.exception("Failed to load runtime state")
             snapshot = {}
 
-        if snapshot != self._state_snapshot:
+        state_changed = snapshot != self._state_snapshot
+        if state_changed:
             self._state_snapshot = snapshot
+        self._refresh_qr_cache()
+        if state_changed:
             self._dirty = True
 
     def _mode_snapshot(self) -> dict[str, Any]:
@@ -217,6 +225,24 @@ class TorrentzApp(RockyButtonApp):
             if public:
                 return public
         return publicize_service_url("http://127.0.0.1:8080/")
+
+    def _refresh_qr_cache(self) -> None:
+        target = self._qbt_proxy_url()
+        if target == self._qr_target and self._qr_image is not None:
+            return
+        self._qr_target = target
+        self._qr_image = self._build_qr_image(target)
+
+    @staticmethod
+    def _build_qr_image(target: str) -> Image.Image | None:
+        qr_url = "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + quote(target, safe="")
+        try:
+            with urlopen(qr_url, timeout=8) as response:
+                qr = Image.open(io.BytesIO(response.read())).convert("1")
+                return qr.resize((88, 88))
+        except Exception:
+            LOGGER.exception("Failed to fetch qBittorrent QR")
+            return None
 
     def _mode_line(self) -> str:
         live = self._mode_snapshot().get("live", {})
@@ -254,14 +280,7 @@ class TorrentzApp(RockyButtonApp):
         if self.page == "menu":
             self._draw_menu(draw, font)
         elif self.page == "qbt":
-            self._draw_lines(draw, font, "QBITTORRENT", [
-                f"Mode: {self._mode_line()}",
-                f"URL: {self._qbt_proxy_url()}",
-                "",
-                "Proxy if available.",
-                "Open from LAN client.",
-                "Hold refresh status.",
-            ])
+            self._draw_qbt_qr_card(image, draw, font)
         elif self.page == "vpn":
             mode = self._mode_snapshot()
             services = mode.get("services", {}) if isinstance(mode.get("services"), dict) else {}
@@ -350,6 +369,35 @@ class TorrentzApp(RockyButtonApp):
             return str(live.get("mode_id", "safe")).upper()[:8]
         return ""
 
+    def _draw_qbt_qr_card(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        font: ImageFont.ImageFont,
+    ) -> None:
+        draw.text((7, 5), "QBITTORRENT QR", font=font, fill=0)
+        draw.line((6, 18, WIDTH - 7, 18), fill=0)
+        qr = self._qr_image
+        if qr is not None:
+            image.paste(qr, (8, 24))
+            draw.rectangle((6, 22, 98, 114), outline=0)
+            mode_text = self._mode_line()[:15]
+            draw.text((108, 28), f"Mode: {mode_text}", font=font, fill=0)
+            draw.text((108, 41), "Scan for Web UI", font=font, fill=0)
+            draw.text((108, 54), "VPN-aware link", font=font, fill=0)
+            draw.text((108, 67), "if Rocky has one.", font=font, fill=0)
+            self._draw_wrapped_text(draw, font, self._qbt_proxy_url(), 108, 83, 18, 2)
+            return
+
+        self._draw_lines(draw, font, "QBITTORRENT", [
+            f"Mode: {self._mode_line()}",
+            "QR fetch failed.",
+            "",
+            "URL fallback:",
+            self._qbt_proxy_url(),
+            "Hold refresh status.",
+        ])
+
     def _draw_lines(
         self,
         draw: ImageDraw.ImageDraw,
@@ -364,6 +412,37 @@ class TorrentzApp(RockyButtonApp):
         for line in lines[:6]:
             draw.text((8, y), line[:38], font=font, fill=0)
             y += 11
+
+    @staticmethod
+    def _draw_wrapped_text(
+        draw: ImageDraw.ImageDraw,
+        font: ImageFont.ImageFont,
+        text: str,
+        x: int,
+        y: int,
+        width_chars: int,
+        max_lines: int,
+    ) -> None:
+        remaining = text.strip()
+        line_y = y
+        for _ in range(max_lines):
+            if not remaining:
+                break
+            line = remaining[:width_chars]
+            if len(remaining) > width_chars:
+                split_at = line.rfind("/")
+                if split_at <= 0:
+                    split_at = line.rfind(".")
+                if split_at <= 0:
+                    split_at = width_chars
+                line = remaining[:split_at]
+                remaining = remaining[split_at:].lstrip("/")
+                if split_at != width_chars:
+                    line = line + "/"
+            else:
+                remaining = ""
+            draw.text((x, line_y), line[:width_chars], font=font, fill=0)
+            line_y += 11
 
     def _render_if_needed(self, *, force: bool = False) -> None:
         with self._lock:
