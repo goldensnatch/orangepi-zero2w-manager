@@ -12,3 +12,6 @@ runtime/
 *.before-*
 *.disabled
 *.orig
+
+rocky-runtime-state-source.txt
+udo -n true
