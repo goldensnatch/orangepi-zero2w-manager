@@ -10,7 +10,7 @@
     "environment": {
       "PYTHONPATH": "/opt/zero2w-manager"
     },
-    "menu_order": 20,
+    "menu_order": 50,
     "menu_visible": true,
     "name": "Diagnostics",
     "type": "application",
@@ -34,7 +34,7 @@
     "display_owner": false,
     "environment": {},
     "installed_path": "/opt/pikvm-lite/app.py",
-    "menu_order": 50,
+    "menu_order": 80,
     "menu_visible": true,
     "name": "PiKVM",
     "network_owner": false,
@@ -54,7 +54,7 @@
     "display_switch_target": "ragnar",
     "environment": {},
     "installed_path": "/opt/pwnagotchi",
-    "menu_order": 20,
+    "menu_order": 30,
     "menu_visible": true,
     "name": "Pwnagotchi",
     "network_owner": true,
@@ -102,7 +102,7 @@
       "PYTHONPATH": "/opt/ragnar/app",
       "PYTHONUNBUFFERED": "1"
     },
-    "menu_order": 10,
+    "menu_order": 20,
     "menu_visible": true,
     "name": "Ragnar",
     "network_owner": true,
@@ -123,7 +123,7 @@
     "environment": {
       "PYTHONPATH": "/opt/zero2w-manager"
     },
-    "menu_order": 30,
+    "menu_order": 60,
     "menu_visible": true,
     "name": "Reader",
     "type": "application",
@@ -142,7 +142,7 @@
       "PYTHONPATH": "/opt/zero2w-manager",
       "PYTHONUNBUFFERED": "1"
     },
-    "menu_order": 40,
+    "menu_order": 70,
     "menu_visible": true,
     "name": "Tesserae",
     "network_owner": false,
@@ -154,7 +154,7 @@
     "description": "Network-wide ad blocking and DNS",
     "display_owner": false,
     "environment": {},
-    "menu_order": 45,
+    "menu_order": 40,
     "menu_visible": true,
     "name": "Pi-hole",
     "network_owner": true,
@@ -177,7 +177,7 @@
       "PYTHONPATH": "/opt/zero2w-manager",
       "PYTHONUNBUFFERED": "1"
     },
-    "menu_order": 46,
+    "menu_order": 11,
     "menu_visible": true,
     "name": "3D Printer",
     "network_owner": false,
@@ -201,7 +201,7 @@
       "PYTHONPATH": "/opt/zero2w-manager",
       "PYTHONUNBUFFERED": "1"
     },
-    "menu_order": 47,
+    "menu_order": 10,
     "menu_visible": true,
     "name": "Torrentz",
     "network_owner": false,

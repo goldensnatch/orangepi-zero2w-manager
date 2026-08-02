@@ -22,6 +22,7 @@ class MenuService:
     WIDTH = 250
     HEIGHT = 122
     VISIBLE_ROWS = 4
+    CURRENT_MODE_ITEM_ID = "__current_mode__"
 
     def __init__(self) -> None:
         self.catalog = ServiceCatalog()
@@ -40,7 +41,16 @@ class MenuService:
         self._last_render_signature: str | None = None
 
     def _build_menu(self) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
+        items: list[dict[str, Any]] = [
+            {
+                "id": self.CURRENT_MODE_ITEM_ID,
+                "name": "Current Mode",
+                "description": "Live Rocky network and policy state",
+                "configured": True,
+                "order": 0,
+                "source": "runtime",
+            }
+        ]
 
         for service in self.catalog.menu_services():
             service_id = str(service["id"])

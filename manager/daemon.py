@@ -37,6 +37,7 @@ ISP_PREP_REQUEST_PATH = Path('/run/rocky/isp-prep-request.json')
 HARDWARE_PREP_STATE_PATH = Path('/run/rocky/hardware-prep-state.json')
 MANAGED_PROCESS_STATE_PATH = Path('/opt/zero2w-manager/runtime/state.json')
 DISPLAY_TIMEZONE = ZoneInfo("America/Chicago")
+CURRENT_MODE_MENU_ITEM_ID = "__current_mode__"
 DEFAULT_CURRENT_MODE_REQUEST = {'version': 1, 'selected_mode_id': 'torrent_fortress', 'previous_mode_id': 'safe', 'requested_at': '2026-07-26T20:45:00Z', 'requested_by': 'operator', 'reason': 'Enable the strongest current torrent/privacy posture while preserving Rocky Admin access on LAN and WireGuard.', 'override_flags': {'mobile_exit_node': False, 'pikvm_policy': 'auto', 'epaper_menu_enabled': True, 'epaper_test_path': 'zero2w_manager_menu', 'allow_public_admin': False}}
 
 
@@ -800,6 +801,8 @@ class ManagerDaemon:
         selected_id = selected.get('id')
         if not selected_id:
             return self._mode_footer_text()
+        if str(selected_id) == CURRENT_MODE_MENU_ITEM_ID:
+            return self._mode_footer_text()
         try:
             service = self._service_configuration(str(selected_id))
         except Exception:
@@ -935,6 +938,15 @@ class ManagerDaemon:
         return "APP"
 
     def _menu_item_label(self, item: dict[str, Any], _is_selected: bool, _index: int) -> str:
+        if str(item.get("id") or "") == CURRENT_MODE_MENU_ITEM_ID:
+            payload = self._resolve_mode_payload()
+            mode = payload.get("mode", {}) if isinstance(payload, dict) else {}
+            live = mode.get("live", {}) if isinstance(mode.get("live"), dict) else {}
+            label = str(live.get("label") or live.get("mode_id") or "Mode").strip()
+            healthy = bool(live.get("healthy", True))
+            compact_name = label.upper().replace(" MODE", "")[:24]
+            return f"{compact_name} [{'OK' if healthy else 'WARN'}]"
+
         try:
             service = self._service_configuration(str(item.get("id") or ""))
         except Exception:
@@ -1955,6 +1967,10 @@ class ManagerDaemon:
         selected = self.menu.selected
         app_id = str(selected["id"])
         app_name = str(selected["name"])
+
+        if app_id == CURRENT_MODE_MENU_ITEM_ID:
+            self.show_menu(self._mode_footer_text(), force_full=True)
+            return
 
         self.log.info(
             "Launching selected menu item: %s",
