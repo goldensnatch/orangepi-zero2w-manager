@@ -110,17 +110,27 @@ class ManagerDaemon:
         )
 
     def _active_display_accepts_controls(self) -> bool:
-        if self._active_display_is_settling():
-            return False
+        return self._active_resident_display_service() is not None
+
+    def _active_resident_display_service(
+        self,
+        *,
+        allow_settling: bool = False,
+    ) -> dict[str, Any] | None:
         if self.menu_visible or not self.active_app_id:
-            return False
+            return None
+        if not allow_settling and self._active_display_is_settling():
+            return None
 
         try:
             service = self._service_configuration(self.active_app_id)
         except Exception:
-            return False
+            return None
 
-        return self._service_is_foreground(service)
+        if not self._is_resident_display_app(service):
+            return None
+
+        return service
 
     def _infrastructure_state(
         self,
@@ -978,12 +988,8 @@ class ManagerDaemon:
         return target.strip()
 
     def _should_short_press_swap_active_display(self) -> bool:
-        if not self._active_display_accepts_controls():
-            return False
-
-        try:
-            service = self._service_configuration(self.active_app_id)
-        except Exception:
+        service = self._active_resident_display_service()
+        if not service:
             return False
 
         return bool(
@@ -1458,15 +1464,8 @@ class ManagerDaemon:
             return False
 
     def _park_active_display_to_menu(self) -> bool:
-        if not self._active_display_accepts_controls():
-            return False
-
-        try:
-            service = self._service_configuration(self.active_app_id)
-        except Exception:
-            return False
-
-        if not self._is_resident_display_app(service):
+        service = self._active_resident_display_service()
+        if not service:
             return False
 
         app_name = str(service.get("name") or self.active_app_id)
