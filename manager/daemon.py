@@ -87,6 +87,7 @@ class ManagerDaemon:
         self._last_published_config_signature: str | None = None
         self._last_config_reconcile_at = 0.0
         self._last_mode_signature: str | None = None
+        self._last_menu_chrome_refresh_at = 0.0
 
         self._clear_isp_prep_request()
         self._clear_hardware_prep_state()
@@ -355,6 +356,17 @@ class ManagerDaemon:
                     "Failed to reconcile persisted network/transfer config"
                 )
 
+        if self.menu_visible and (
+            now - self._last_menu_chrome_refresh_at >= 5.0
+        ):
+            self._last_menu_chrome_refresh_at = now
+            try:
+                if hasattr(self.menu, "footer_override"):
+                    self.menu.footer_override = self._mode_footer_text()
+                self.menu.render()
+            except Exception:
+                self.log.exception("Failed to refresh launcher header")
+
         return self.running
 
     def _publish_runtime_state(
@@ -390,6 +402,53 @@ class ManagerDaemon:
 
     def _default_current_mode_request(self) -> dict[str, Any]:
         return json.loads(json.dumps(DEFAULT_CURRENT_MODE_REQUEST))
+
+    def _mode_abbreviation(
+        self,
+        mode_payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = mode_payload or self._resolve_mode_payload()
+        mode = payload.get("mode", {}) if isinstance(payload, dict) else {}
+        live = mode.get("live", {}) if isinstance(mode.get("live"), dict) else {}
+        label = str(
+            live.get("label")
+            or mode.get("desired", {}).get("mode_id", "safe")
+        ).strip()
+        tokens = [segment for segment in label.replace("-", " ").split() if segment]
+        if len(tokens) >= 2:
+            return "".join(token[0].upper() for token in tokens[:3])[:3]
+        compact = "".join(ch for ch in label.upper() if ch.isalnum())
+        return compact[:4] or "MODE"
+
+    def _battery_header_text(self) -> str:
+        try:
+            power_root = Path("/sys/class/power_supply")
+            if not power_root.is_dir():
+                return "PWR"
+            for device in sorted(power_root.iterdir()):
+                capacity_path = device / "capacity"
+                if not capacity_path.is_file():
+                    continue
+                capacity = capacity_path.read_text(encoding="utf-8").strip()
+                if capacity:
+                    return f"B{capacity[:3]}"
+        except Exception:
+            self.log.debug("Battery header lookup failed", exc_info=True)
+        return "PWR"
+
+    def _menu_header_payload(self) -> dict[str, str]:
+        mode_payload = self._resolve_mode_payload()
+        stamp = time.localtime()
+        show_date = int(time.time() // 6) % 2 == 1
+        clock_text = (
+            time.strftime("%m-%d", stamp)
+            if show_date
+            else time.strftime("%H:%M", stamp)
+        )
+        return {
+            "title": f"ROCKY {self._mode_abbreviation(mode_payload)}"[:18],
+            "meta": f"{self._battery_header_text()} {clock_text}"[:16],
+        }
 
     def _read_json_file(self, path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -669,6 +728,64 @@ class ManagerDaemon:
         except Exception:
             return None
         return None
+
+    def _request_mode_change(
+        self,
+        selected_mode_id: str,
+        *,
+        reason: str,
+        requested_by: str = "rocky_menu",
+    ) -> bool:
+        target_mode = str(selected_mode_id).strip()
+        if not target_mode:
+            return False
+
+        existing = self._load_current_mode_request()
+        current_mode = str(existing.get("selected_mode_id") or "safe")
+        if current_mode == target_mode:
+            return False
+
+        updated = {
+            "version": int(existing.get("version", 1)),
+            "selected_mode_id": target_mode,
+            "previous_mode_id": current_mode,
+            "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "requested_by": requested_by,
+            "reason": reason,
+            "override_flags": existing.get("override_flags", {}) if isinstance(existing.get("override_flags"), dict) else {},
+        }
+
+        CURRENT_MODE_REQUEST_PATH.parent.mkdir(
+            mode=0o775,
+            parents=True,
+            exist_ok=True,
+        )
+        CURRENT_MODE_REQUEST_PATH.write_text(
+            json.dumps(updated, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self._last_mode_signature = None
+        return True
+
+    def _apply_service_activation_mode(
+        self,
+        service: dict[str, Any],
+    ) -> None:
+        target_mode = str(service.get("activate_mode") or "").strip()
+        if not target_mode:
+            return
+
+        if self._request_mode_change(
+            target_mode,
+            reason=f"launcher_open:{str(service.get('id') or target_mode)}",
+        ):
+            self.log.info(
+                "Requested mode change to %s for %s launch",
+                target_mode,
+                str(service.get("id") or "service"),
+            )
+            self._reconcile_mode_actions(target_mode)
+            self._publish_runtime_state()
 
     def _selection_footer_text(self, selected: dict[str, Any] | None = None) -> str:
         selected = selected if isinstance(selected, dict) else self.menu.selected
@@ -1206,6 +1323,8 @@ class ManagerDaemon:
             try:
                 if hasattr(self.menu, "item_formatter"):
                     self.menu.item_formatter = self._menu_item_label
+                if hasattr(self.menu, "header_provider"):
+                    self.menu.header_provider = self._menu_header_payload
                 if hasattr(self.menu, "footer_override"):
                     self.menu.footer_override = self._selection_footer_text(self.menu.selected if self.menu.items else None)
                 self.menu.render(
@@ -1845,6 +1964,7 @@ class ManagerDaemon:
         service = self._service_configuration(
             app_id
         )
+        self._apply_service_activation_mode(service)
 
         if self._is_resident_display_app(service):
             self._resume_service_to_foreground(service)

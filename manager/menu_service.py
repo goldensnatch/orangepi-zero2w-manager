@@ -36,6 +36,7 @@ class MenuService:
         )
         self.footer_override: str | None = None
         self.item_formatter: Callable[[dict[str, Any], bool, int], str] | None = None
+        self.header_provider: Callable[[], dict[str, str]] | None = None
         self._last_render_signature: str | None = None
 
     def _build_menu(self) -> list[dict[str, Any]]:
@@ -192,9 +193,20 @@ class MenuService:
             outline=0,
         )
 
+        header_title = "ROCKY APPS"
+        header_meta = ""
+        if callable(self.header_provider):
+            try:
+                header = self.header_provider() or {}
+            except Exception:
+                header = {}
+            if isinstance(header, dict):
+                header_title = str(header.get("title") or header_title).strip() or header_title
+                header_meta = str(header.get("meta") or "").strip()
+
         draw.text(
             (7, 5),
-            "ROCKY APPS",
+            header_title[:18],
             font=font,
             fill=0,
         )
@@ -204,8 +216,19 @@ class MenuService:
             if self.items
             else "0/0"
         )
+        if header_meta:
+            meta_x = max(
+                110,
+                self.WIDTH - 8 - (len(header_meta[:16]) * 6),
+            )
+            draw.text(
+                (meta_x, 5),
+                header_meta[:16],
+                font=font,
+                fill=0,
+            )
         draw.text(
-            (self.WIDTH - 40, 5),
+            (self.WIDTH - 34, 15),
             count_text[:6],
             font=font,
             fill=0,
@@ -214,9 +237,9 @@ class MenuService:
         draw.line(
             (
                 6,
-                18,
+                24,
                 self.WIDTH - 7,
-                18,
+                24,
             ),
             fill=0,
         )
@@ -247,7 +270,7 @@ class MenuService:
             window_start + self.VISIBLE_ROWS
         ]
 
-        y = 26
+        y = 30
 
         for offset, item in enumerate(visible):
             absolute_index = (

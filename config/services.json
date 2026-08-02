@@ -164,6 +164,7 @@
     "docker_container": "rocky-pihole"
   },
   "3d_printer": {
+    "activate_mode": "print_lab",
     "background_allowed": false,
     "command": [
       "/opt/zero2w-manager/venv/bin/python3",
