@@ -4,6 +4,7 @@ import io
 import textwrap
 import threading
 import time
+from typing import Callable
 from typing import Any
 from urllib.parse import quote
 from urllib.request import urlopen
@@ -33,6 +34,7 @@ class MenuService:
             partial_limit=15,
         )
         self.footer_override: str | None = None
+        self.item_formatter: Callable[[dict[str, Any], bool, int], str] | None = None
 
     def _build_menu(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -175,6 +177,18 @@ class MenuService:
             fill=0,
         )
 
+        count_text = (
+            f"{self.selected_index + 1}/{len(self.items)}"
+            if self.items
+            else "0/0"
+        )
+        draw.text(
+            (self.WIDTH - 40, 5),
+            count_text[:6],
+            font=font,
+            fill=0,
+        )
+
         draw.line(
             (
                 6,
@@ -229,6 +243,15 @@ class MenuService:
                 else " "
             )
 
+            if callable(self.item_formatter):
+                display_name = self.item_formatter(
+                    item,
+                    is_selected,
+                    absolute_index,
+                )
+            else:
+                display_name = item["name"]
+
             installed = (
                 ""
                 if item["configured"]
@@ -237,7 +260,7 @@ class MenuService:
 
             label = (
                 f"{marker} "
-                f"{item['name']}"
+                f"{display_name}"
                 f"{installed}"
             )
 
@@ -272,9 +295,14 @@ class MenuService:
             width=38,
         )
 
-        footer_text = (
+        footer_line_one = (
             wrapped[0]
             if wrapped
+            else ""
+        )
+        footer_line_two = (
+            wrapped[1]
+            if len(wrapped) > 1
             else ""
         )
 
@@ -290,7 +318,13 @@ class MenuService:
 
         draw.text(
             (8, 101),
-            footer_text[:38],
+            footer_line_one[:38],
+            font=font,
+            fill=0,
+        )
+        draw.text(
+            (8, 111),
+            footer_line_two[:38],
             font=font,
             fill=0,
         )

@@ -27,7 +27,7 @@ class ButtonService:
     SELECT_CODE = 28       # KEY_ENTER
 
     LONG_PRESS_SECONDS = 1.2
-    DEBOUNCE_SECONDS = 0.12
+    DEBOUNCE_SECONDS = 0.08
 
     def __init__(
         self,

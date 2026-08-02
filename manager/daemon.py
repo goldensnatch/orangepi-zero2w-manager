@@ -505,26 +505,85 @@ class ManagerDaemon:
         return None
 
     def _selection_footer_text(self, selected: dict[str, Any] | None = None) -> str:
-        base = self._mode_footer_text()
         selected = selected if isinstance(selected, dict) else self.menu.selected
         if not isinstance(selected, dict):
-            return base
+            return self._mode_footer_text()
         selected_id = selected.get('id')
         if not selected_id:
-            return base
+            return self._mode_footer_text()
         try:
             service = self._service_configuration(str(selected_id))
         except Exception:
-            return base
-        if not self._service_supports_qr_preview(service):
-            return base
-        if self._resolve_qr_target(str(selected_id)):
-            return f"{base[:26]} | SELECT=QR"[:38]
-        unit = service.get('systemd_service')
-        status = self._mode_service_status(str(unit)) if unit else 'unknown'
-        if status == 'active':
-            return f"{base[:26]} | SELECT=QR"[:38]
-        return base
+            return self._mode_footer_text()
+
+        description = str(service.get('description') or selected.get('description') or '').strip()
+        status_hint = self._service_status_hint(service)
+        action_hint = self._selection_action_hint(service)
+
+        segments = []
+        if description:
+            segments.append(description[:38])
+        if status_hint or action_hint:
+            segments.append(f"{status_hint} {action_hint}".strip())
+
+        footer = " | ".join(segment for segment in segments if segment)
+        if not footer:
+            footer = self._mode_footer_text()
+        return footer[:76]
+
+    def _selection_action_hint(self, service: dict[str, Any]) -> str:
+        if self._service_supports_qr_preview(service):
+            return "SELECT=QR"
+        if service.get("type") == "background_service":
+            return "SELECT=STATUS"
+        return "SELECT=OPEN HOLDNAV=BACK"
+
+    def _service_status_hint(self, service: dict[str, Any]) -> str:
+        service_type = str(service.get("type") or "application")
+        app_id = str(service.get("id") or "")
+
+        if service_type == "background_service":
+            if self._resolve_qr_target(app_id):
+                return "QR READY"
+
+            unit = service.get("systemd_service")
+            container = service.get("docker_container")
+
+            if unit:
+                status = self._mode_service_status(str(unit))
+                return "RUNNING" if status == "active" else status.upper()[:12]
+
+            if container:
+                status = self._docker_container_health(str(container))
+                return status.upper()[:12]
+
+            return "BACKGROUND"
+
+        if self.active_app_id == app_id and self._app_is_running():
+            return "LIVE"
+
+        if not service.get("configured", True):
+            return "MISSING"
+
+        if service.get("network_owner"):
+            return "NET APP"
+
+        return "APP"
+
+    def _menu_item_label(self, item: dict[str, Any], _is_selected: bool, _index: int) -> str:
+        try:
+            service = self._service_configuration(str(item.get("id") or ""))
+        except Exception:
+            service = dict(item)
+
+        name = str(item.get("name") or service.get("name") or item.get("id") or "App")
+        status_hint = self._service_status_hint(service)
+
+        if status_hint:
+            compact_name = name[:24]
+            return f"{compact_name} [{status_hint[:8]}]"
+
+        return name
 
     def install_signal_handlers(self) -> None:
         signal.signal(signal.SIGINT, self.shutdown)
@@ -604,6 +663,8 @@ class ManagerDaemon:
                 return
 
             try:
+                if hasattr(self.menu, "item_formatter"):
+                    self.menu.item_formatter = self._menu_item_label
                 if hasattr(self.menu, "footer_override"):
                     self.menu.footer_override = self._selection_footer_text(self.menu.selected if self.menu.items else None)
                 self.menu.render(message)
@@ -703,7 +764,7 @@ class ManagerDaemon:
 
             button_server.publish(
                 "navigate",
-                "short_press",
+                "long_press" if event.held_seconds >= ButtonService.LONG_PRESS_SECONDS else "short_press",
                 duration=event.held_seconds,
             )
             return
@@ -737,7 +798,10 @@ class ManagerDaemon:
                 )
                 return
 
-            selected = self.menu.next()
+            if event.held_seconds >= ButtonService.LONG_PRESS_SECONDS:
+                selected = self.menu.previous()
+            else:
+                selected = self.menu.next()
 
             self.log.info(
                 "Selected menu item: %s",
