@@ -779,7 +779,7 @@ class ManagerDaemon:
             return False
 
         return bool(
-            self._is_systemd_display_service(service)
+            service.get("display_owner")
             and self._companion_display_target(self.active_app_id)
         )
 
