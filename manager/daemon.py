@@ -1438,12 +1438,17 @@ class ManagerDaemon:
     def _resume_service_to_foreground(
         self,
         service: dict[str, Any],
+        *,
+        show_transition: bool = True,
     ) -> bool:
         app_id = str(service.get("id") or "")
         app_name = str(service.get("name") or app_id or "App")
 
-        self.menu.render(f"Opening {app_name}...")
-        self.hide_menu()
+        if show_transition:
+            self.menu.render(f"Opening {app_name}...")
+
+        if self.menu_visible:
+            self.hide_menu()
 
         if self._service_is_running(service):
             resumed = self._resume_resident_display_service(service)
@@ -1486,7 +1491,10 @@ class ManagerDaemon:
             )
             return True
 
-        self._activate_service(service)
+        self._activate_service(
+            service,
+            show_transition=show_transition,
+        )
         return True
 
     def _handle_background_service(
@@ -1627,6 +1635,8 @@ class ManagerDaemon:
     def _activate_systemd_display_service(
         self,
         service: dict[str, Any],
+        *,
+        show_transition: bool = True,
     ) -> None:
         app_id = str(service.get("id") or "service")
         app_name = str(service.get("name") or app_id)
@@ -1636,10 +1646,12 @@ class ManagerDaemon:
             primary = str(service.get("systemd_service") or "").strip()
             start_units = [primary] if primary else []
 
-        self.menu.render(
-            f"Starting {app_name}..."
-        )
-        self.hide_menu()
+        if show_transition:
+            self.menu.render(
+                f"Starting {app_name}..."
+            )
+        if self.menu_visible:
+            self.hide_menu()
 
         if not self._run_systemctl(
             "start",
@@ -1719,9 +1731,15 @@ class ManagerDaemon:
 
         try:
             if self._is_resident_display_app(target_service):
-                self._resume_service_to_foreground(target_service)
+                self._resume_service_to_foreground(
+                    target_service,
+                    show_transition=False,
+                )
             else:
-                self._activate_service(target_service)
+                self._activate_service(
+                    target_service,
+                    show_transition=False,
+                )
         except Exception:
             self.log.exception(
                 "Companion display toggle failed: %s -> %s",
@@ -1736,18 +1754,25 @@ class ManagerDaemon:
     def _activate_service(
         self,
         service: dict[str, Any],
+        *,
+        show_transition: bool = True,
     ) -> None:
         if self._is_systemd_display_service(service):
-            self._activate_systemd_display_service(service)
+            self._activate_systemd_display_service(
+                service,
+                show_transition=show_transition,
+            )
             return
 
         app_id = str(service.get("id") or "")
         app_name = str(service.get("name") or app_id or "App")
 
-        self.menu.render(
-            f"Starting {app_name}..."
-        )
-        self.hide_menu()
+        if show_transition:
+            self.menu.render(
+                f"Starting {app_name}..."
+            )
+        if self.menu_visible:
+            self.hide_menu()
 
         process = self.application_manager.launch(
             service
