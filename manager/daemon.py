@@ -259,6 +259,11 @@ class ManagerDaemon:
         QBT = 'rocky-transfer-qbittorrent'
         PIHOLE = 'rocky-pihole'
 
+        pihole_health = self._docker_container_health(PIHOLE)
+        if pihole_health == 'stopped':
+            self.log.info('%s: starting %s', effective_mode_id, PIHOLE)
+            self._docker_ensure(PIHOLE, running=True)
+
         if effective_mode_id == 'safe':
             # Safe mode keeps the VPN tunnel up while leaving transfer disabled.
             qbt_health = self._docker_container_health(QBT)
@@ -269,10 +274,6 @@ class ManagerDaemon:
             if gluetun_health == 'stopped':
                 self.log.info('safe mode: starting %s', GLUETUN)
                 self._docker_ensure(GLUETUN, running=True)
-            pihole_health = self._docker_container_health(PIHOLE)
-            if pihole_health != 'stopped':
-                self.log.info('safe mode: stopping %s', PIHOLE)
-                self._docker_ensure(PIHOLE, running=False)
 
         elif effective_mode_id == 'torrent_fortress':
             # Start gluetun first, wait for healthy, then start qBittorrent
@@ -299,10 +300,6 @@ class ManagerDaemon:
                 )
 
         elif effective_mode_id in ('pihole_only', 'daily_driver'):
-            pihole_health = self._docker_container_health(PIHOLE)
-            if pihole_health == 'stopped':
-                self.log.info('%s: starting %s', effective_mode_id, PIHOLE)
-                self._docker_ensure(PIHOLE, running=True)
             qbt_health = self._docker_container_health(QBT)
             if qbt_health != 'stopped':
                 self.log.info('%s: stopping %s', effective_mode_id, QBT)
@@ -313,10 +310,6 @@ class ManagerDaemon:
                 self._docker_ensure(GLUETUN, running=False)
 
         elif effective_mode_id == 'print_lab':
-            pihole_health = self._docker_container_health(PIHOLE)
-            if pihole_health != 'stopped':
-                self.log.info('print_lab: stopping %s', PIHOLE)
-                self._docker_ensure(PIHOLE, running=False)
             qbt_health = self._docker_container_health(QBT)
             if qbt_health != 'stopped':
                 self.log.info('print_lab: stopping %s', QBT)
@@ -571,10 +564,20 @@ class ManagerDaemon:
         except Exception:
             self.log.exception('Failed to persist web service cache')
 
-    def _build_web_services_state(self) -> dict[str, Any]:
+    def _build_web_services_state(
+        self,
+        effective_mode: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         live: dict[str, Any] = {}
         cache = self._load_web_service_cache()
         cache_changed = False
+        mode_id = str((effective_mode or {}).get('mode_id') or '').strip().lower()
+        network_policy = (
+            effective_mode.get('network', {})
+            if isinstance((effective_mode or {}).get('network'), dict)
+            else {}
+        )
+        allow_public_admin = bool(network_policy.get('allow_public_admin', False))
         for app_id, service in self.menu.services.items():
             if not isinstance(service, dict):
                 continue
@@ -589,6 +592,12 @@ class ManagerDaemon:
                 active = True
             public_url = self._publicize_service_url(raw_url)
             tokenized_proxy_url = self._tokenized_proxy_url(str(app_id))
+            if (
+                mode_id == 'torrent_fortress'
+                and not allow_public_admin
+                and str(app_id) in {'pihole', 'pikvm'}
+            ):
+                tokenized_proxy_url = ''
             entry = {
                 'available': True,
                 'active': bool(active),
@@ -652,7 +661,7 @@ class ManagerDaemon:
         if effective_mode_id == 'safe' and transfer_state.get('healthy'):
             warnings.append('transfer_stack_active_under_safe_mode')
 
-        service_state = self._build_web_services_state()
+        service_state = self._build_web_services_state(effective_mode)
         return {
             'mode': {
                 'desired': {
