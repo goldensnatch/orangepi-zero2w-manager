@@ -837,7 +837,9 @@ class ManagerDaemon:
                 self._activate_selected_menu_item()
                 return
 
-            selected = self.menu.previous()
+            selected = self.menu.previous(
+                render=False,
+            )
 
             self.log.info(
                 "Selected menu item: %s",
@@ -1128,7 +1130,9 @@ class ManagerDaemon:
                 self._activate_selected_menu_item()
                 return
 
-            selected = self.menu.next()
+            selected = self.menu.next(
+                render=False,
+            )
 
             self.log.info(
                 "Selected menu item: %s",

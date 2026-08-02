@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import time
+import hashlib
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -28,7 +29,7 @@ VISIBLE_ROWS = 4
 
 class ModeSelectorApp(RockyButtonApp):
     name = "Rocky Mode Selector"
-    update_interval = 0.25
+    update_interval = 0.1
 
     def __init__(self) -> None:
         super().__init__()
@@ -47,6 +48,7 @@ class ModeSelectorApp(RockyButtonApp):
         self.status_until = 0.0
         self._dirty = True
         self._last_state_poll = 0.0
+        self._last_render_signature: str | None = None
 
     def setup(self) -> None:
         self.reload_catalog_and_state(force_select_current=True)
@@ -85,6 +87,8 @@ class ModeSelectorApp(RockyButtonApp):
         self._render_if_needed()
 
     def on_button(self, event: ButtonEvent) -> None:
+        should_render = False
+
         with self._lock:
             if event.button == "up" and event.action == "short_press":
                 if self.mode_ids:
@@ -92,25 +96,26 @@ class ModeSelectorApp(RockyButtonApp):
                     self.status_message = None
                     self.status_until = 0.0
                     self._dirty = True
+                    should_render = True
                     LOGGER.info("Selected mode row %d -> %s", self.selected_index, self.selected_mode_id())
-                return
-
-            if event.button == "down" and event.action == "short_press":
+            elif event.button == "down" and event.action == "short_press":
                 if self.mode_ids:
                     self.selected_index = (self.selected_index + 1) % len(self.mode_ids)
                     self.status_message = None
                     self.status_until = 0.0
                     self._dirty = True
+                    should_render = True
                     LOGGER.info("Selected mode row %d -> %s", self.selected_index, self.selected_mode_id())
-                return
-
-            if event.button == "select" and event.action == "long_press":
+            elif event.button == "select" and event.action == "long_press":
                 selected_mode_id = self.selected_mode_id()
                 if selected_mode_id:
                     self.apply_selected_mode(selected_mode_id)
-                return
+                    should_render = True
+            else:
+                LOGGER.info("Ignored button event: %s %s", event.button, event.action)
 
-            LOGGER.info("Ignored button event: %s %s", event.button, event.action)
+        if should_render:
+            self._render_if_needed()
 
     def selected_mode_id(self) -> str | None:
         if not self.mode_ids:
@@ -247,9 +252,15 @@ class ModeSelectorApp(RockyButtonApp):
             if not force and not self._dirty:
                 return
             image = self.render_image()
+            signature = hashlib.sha1(image.tobytes()).hexdigest()
+            if not force and self._last_render_signature == signature:
+                self._dirty = False
+                return
             self._dirty = False
         if self.display is not None:
             self.display.show(image)
+            with self._lock:
+                self._last_render_signature = signature
 
 
 if __name__ == '__main__':

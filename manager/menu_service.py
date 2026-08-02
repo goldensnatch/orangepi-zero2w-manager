@@ -4,6 +4,7 @@ import io
 import textwrap
 import threading
 import time
+import hashlib
 from typing import Callable
 from typing import Any
 from urllib.parse import quote
@@ -35,6 +36,7 @@ class MenuService:
         )
         self.footer_override: str | None = None
         self.item_formatter: Callable[[dict[str, Any], bool, int], str] | None = None
+        self._last_render_signature: str | None = None
 
     def _build_menu(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -86,6 +88,8 @@ class MenuService:
 
     def advance_selection(
         self,
+        *,
+        render: bool = True,
     ) -> dict[str, Any]:
         with self._lock:
             if not self.items:
@@ -97,17 +101,26 @@ class MenuService:
                 self.selected_index + 1
             ) % len(self.items)
 
-            return self.selected
+            selected = self.selected
+
+        if render:
+            self.render()
+
+        return selected
 
     def next(
         self,
+        *,
+        render: bool = True,
     ) -> dict[str, Any]:
-        selected = self.advance_selection()
-        self.render()
-        return selected
+        return self.advance_selection(
+            render=render,
+        )
 
     def previous(
         self,
+        *,
+        render: bool = True,
     ) -> dict[str, Any]:
         with self._lock:
             if not self.items:
@@ -121,8 +134,17 @@ class MenuService:
 
             selected = self.selected
 
-        self.render()
+        if render:
+            self.render()
+
         return selected
+
+    def _image_signature(
+        self,
+        image: Image.Image,
+    ) -> str:
+        payload = image.tobytes()
+        return hashlib.sha1(payload).hexdigest()
 
     def reload(
         self,
@@ -337,12 +359,20 @@ class MenuService:
         force_full: bool = False,
     ) -> None:
         image = self._make_image(message)
+        signature = self._image_signature(image)
 
         with self._lock:
+            if (
+                not force_full
+                and self._last_render_signature == signature
+            ):
+                return
+
             self.display_manager.show(
                 image,
                 force_full=force_full,
             )
+            self._last_render_signature = signature
 
     def render_web_qr(
         self,
@@ -373,6 +403,7 @@ class MenuService:
             y += 12
         with self._lock:
             self.display_manager.show(image, force_full=True)
+            self._last_render_signature = self._image_signature(image)
 
     def prepare_for_app(self) -> None:
         """Clear and release the panel before launching an app."""
@@ -381,6 +412,7 @@ class MenuService:
             self.display_manager.clear(
                 force_full=True,
             )
+            self._last_render_signature = None
 
             time.sleep(0.2)
 
@@ -389,3 +421,4 @@ class MenuService:
     def close(self) -> None:
         with self._lock:
             self.display_manager.close()
+            self._last_render_signature = None
