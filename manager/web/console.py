@@ -1528,24 +1528,27 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
 
     def do_POST(self) -> None:
-
-        if not self.require_authentication():
-
-            return
-
-        if not self.require_request_size_allowed():
-
-            return
-
         request = urlparse(self.path)
 
         if request.path.startswith("/proxy/"):
+
+            if not self.require_request_size_allowed():
+
+                return
 
             if not self.require_rate_limit("write", limit=RATE_LIMIT_WRITE):
 
                 return
 
             self.handle_proxy(request, method="POST")
+
+            return
+
+        if not self.require_authentication():
+
+            return
+
+        if not self.require_request_size_allowed():
 
             return
 
@@ -2072,7 +2075,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 "description": "Gluetun + qBittorrent downloader stack",
                 "status": "running" if transfer_state.get("healthy") else "degraded",
                 "type": "web_interface",
-                "open_url": proxy_url,
+                "open_url": tokenized_proxy_url,
                 "mobile_url": tokenized_proxy_url,
                 "qr_url": self.qr_image_url(tokenized_proxy_url),
             })
@@ -2105,15 +2108,22 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             return
         target_path = "/" + remainder if remainder else "/"
         target = base.rstrip("/") + target_path
-        if request.query:
-            target += "?" + request.query
+        forwarded_query = request.query
+        if forwarded_query:
+            parsed_query = parse_qs(forwarded_query, keep_blank_values=True)
+            parsed_query.pop("access_token", None)
+            query_parts: list[str] = []
+            for key, values in parsed_query.items():
+                for value in values:
+                    query_parts.append(f"{quote(str(key))}={quote(str(value))}")
+            if query_parts:
+                target += "?" + "&".join(query_parts)
         body = None
         if method == "POST":
             length = int(self.headers.get("Content-Length", "0") or "0")
             body = self.rfile.read(length)
         upstream = urlparse(base)
-        upstream = urlparse(base)
-        host_override = "127.0.0.1:8080" if app_id == "transfer-stack" else upstream.netloc
+        host_override = upstream.netloc
         proxy_request = Request(target, data=body, method=method)
         for header_name in ("Content-Type", "Cookie", "User-Agent"):
             header_value = self.headers.get(header_name)
