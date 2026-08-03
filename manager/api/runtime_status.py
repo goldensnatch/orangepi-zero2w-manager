@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from manager.system_probe import network_header_token, network_links_snapshot, process_snapshot
+
 
 DEFAULT_SERVICE = "zero2w-manager.service"
 DEFAULT_APPS_DIR = Path("/opt/rocky/apps")
@@ -351,6 +353,11 @@ def build_runtime_status(
             "uptime_seconds": system_uptime_seconds(),
         },
         "buttons": inspect_socket(button_socket),
+        "network": {
+            **network_links_snapshot(),
+            "header_token": network_header_token(),
+        },
+        "processes": process_snapshot(),
         "applications": {
             "directory": str(apps_dir),
             "count": len(applications),

@@ -22,6 +22,7 @@ from manager.runtime import (
     button_server,
 )
 from manager.runtime.context import RuntimeContext
+from manager.system_probe import network_header_token, network_links_snapshot
 
 
 LOGGER = logging.getLogger("zero2w-manager")
@@ -805,9 +806,10 @@ class ManagerDaemon:
             chicago_dt = time.strftime("%m-%d", time.localtime(stamp))
         show_date = int(time.time() // 6) % 2 == 1
         clock_text = chicago_dt if show_date else local_dt
+        network_text = network_header_token(network_links_snapshot())
         return {
             "title": f"ROCKY {self._mode_abbreviation(mode_payload)}"[:18],
-            "meta": f"{self._battery_header_text()} {clock_text}"[:16],
+            "meta": f"{self._battery_header_text()} {network_text} {clock_text}"[:16],
         }
 
     def _read_json_file(self, path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
