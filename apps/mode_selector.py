@@ -27,9 +27,10 @@ logging.basicConfig(
 LOGGER = logging.getLogger("mode-selector")
 WIDTH = 250
 HEIGHT = 122
-VISIBLE_ROWS = 4
+VISIBLE_ROWS = 3
 MODE_CATALOG_PATH = Path("/opt/zero2w-manager/runtime/config/modes.json")
 CURRENT_MODE_REQUEST_PATH = Path("/opt/zero2w-manager/runtime/config/current-mode.json")
+RUNTIME_STATE_PATH = Path("/run/rocky/state.json")
 
 DEFAULT_MODE_CATALOG = {
     "version": 1,
@@ -77,6 +78,8 @@ class ModeSelectorApp(RockyButtonApp):
         self._status_message: str | None = None
         self._status_until = 0.0
         self._current_mode_id = "safe"
+        self._mode_map: dict[str, dict[str, Any]] = {}
+        self._runtime_state: dict[str, Any] = {}
 
     def setup(self) -> None:
         self.display_context = Display()
@@ -100,6 +103,7 @@ class ModeSelectorApp(RockyButtonApp):
                 self._status_until = 0.0
                 self._status_message = None
                 self._dirty = True
+            self._reload_runtime_state()
         self._render_if_needed()
 
     def on_button(self, event: ButtonEvent) -> None:
@@ -125,12 +129,14 @@ class ModeSelectorApp(RockyButtonApp):
         items: list[dict[str, Any]] = []
         current_mode_id = str(request.get("selected_mode_id") or "safe")
         selected_index = 0
+        mode_map: dict[str, dict[str, Any]] = {}
         for idx, raw_mode in enumerate(modes):
             if not isinstance(raw_mode, dict):
                 continue
             mode_id = str(raw_mode.get("mode_id") or "").strip()
             if not mode_id:
                 continue
+            mode_map[mode_id] = raw_mode
             items.append(
                 {
                     "id": mode_id,
@@ -142,9 +148,16 @@ class ModeSelectorApp(RockyButtonApp):
                 selected_index = idx
         items.append({"id": "back", "label": "Back", "description": "Return to Rocky launcher"})
         self.menu_items = items
+        self._mode_map = mode_map
         self.selected_index = min(selected_index, max(0, len(self.menu_items) - 1))
         self._current_mode_id = current_mode_id
         self._dirty = True
+
+    def _reload_runtime_state(self) -> None:
+        state = _read_json(RUNTIME_STATE_PATH, {})
+        if state != self._runtime_state:
+            self._runtime_state = state
+            self._dirty = True
 
     def _handle_select(self) -> bool:
         selected = self.menu_items[self.selected_index]
@@ -184,6 +197,35 @@ class ModeSelectorApp(RockyButtonApp):
         description = str(selected.get("description") or "")
         return (description or "UP/DN NAV | HOLD SELECT")[:38]
 
+    def _selected_mode_details(self) -> tuple[str, str]:
+        selected = self.menu_items[self.selected_index]
+        mode_id = str(selected.get("id") or "")
+        if mode_id == "back":
+            return ("Return to launcher", "No mode change")
+
+        mode = self._mode_map.get(mode_id, {})
+        network = mode.get("network", {}) if isinstance(mode.get("network"), dict) else {}
+        dns_mode = str(network.get("dns_mode") or "router_default").replace("_", " ").upper()
+        vpn_required = bool(network.get("vpn_required", False))
+        transfer = mode.get("transfer", {}) if isinstance(mode.get("transfer"), dict) else {}
+        transfer_enabled = bool(transfer.get("enabled", False))
+        admin = mode.get("admin", {}) if isinstance(mode.get("admin"), dict) else {}
+        qb_webui = admin.get("qb_webui", {}) if isinstance(admin.get("qb_webui"), dict) else {}
+        lan_admin = bool(network.get("allow_lan_admin", True))
+        qb_lan = bool(qb_webui.get("lan", False))
+        runtime_mode = self._runtime_state.get("mode", {}) if isinstance(self._runtime_state.get("mode"), dict) else {}
+        services = runtime_mode.get("services", {}) if isinstance(runtime_mode.get("services"), dict) else {}
+
+        line_one = f"VPN {'ON' if vpn_required else 'OFF'} DNS {dns_mode[:12]}"
+        line_two = f"XFER {'ON' if transfer_enabled else 'OFF'} LAN {'ON' if lan_admin else 'OFF'} QB {'ON' if qb_lan else 'OFF'}"
+
+        if mode_id == self._current_mode_id and services:
+            gluetun = str(services.get("gluetun") or "off").upper()
+            qbt = str(services.get("qbittorrent") or "off").upper()
+            line_two = f"LIVE V:{gluetun[:4]} Q:{qbt[:4]} P:{str(services.get('pihole') or 'off').upper()[:4]}"
+
+        return (line_one[:38], line_two[:38])
+
     def render_image(self) -> Image.Image:
         image = Image.new("1", (WIDTH, HEIGHT), 255)
         draw = ImageDraw.Draw(image)
@@ -207,9 +249,12 @@ class ModeSelectorApp(RockyButtonApp):
             draw.text((9, y), row[:37], font=font, fill=0)
             y += 16
 
-        draw.line((6, 94, WIDTH - 7, 94), fill=0)
-        draw.text((8, 101), self._footer_text(), font=font, fill=0)
-        draw.text((8, 111), "UP/DN NAV | HOLD APPLY"[:38], font=font, fill=0)
+        detail_one, detail_two = self._selected_mode_details()
+        draw.line((6, 78, WIDTH - 7, 78), fill=0)
+        draw.text((8, 84), detail_one, font=font, fill=0)
+        draw.text((8, 94), detail_two, font=font, fill=0)
+        draw.line((6, 104, WIDTH - 7, 104), fill=0)
+        draw.text((8, 109), self._footer_text(), font=font, fill=0)
         return image
 
     def _render_if_needed(self, *, force: bool = False) -> None:

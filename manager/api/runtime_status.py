@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from manager.system_probe import network_header_token, network_links_snapshot, process_snapshot
+from manager.runtime import ServiceCatalog
 
 
 DEFAULT_SERVICE = "zero2w-manager.service"
@@ -19,6 +20,11 @@ DEFAULT_STATE_FILE = Path(
 )
 DEFAULT_BUTTON_SOCKET = Path(
     "/run/rocky/buttons.sock"
+)
+DEFAULT_DOCKER_CONTAINERS = (
+    "rocky-pihole",
+    "rocky-transfer-gluetun",
+    "rocky-transfer-qbittorrent",
 )
 
 
@@ -320,6 +326,82 @@ def discover_applications(
     return applications
 
 
+def docker_container_status(name: str) -> dict[str, Any]:
+    try:
+        state_result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Status}}", name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as error:
+        return {
+            "name": name,
+            "status": "unknown",
+            "healthy": False,
+            "running": False,
+            "error": str(error),
+        }
+
+    if state_result.returncode != 0:
+        return {
+            "name": name,
+            "status": "stopped",
+            "healthy": False,
+            "running": False,
+            "error": None,
+        }
+
+    state = state_result.stdout.strip() or "unknown"
+    running = state == "running"
+    health = None
+    if running:
+        health_result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Health.Status}}", name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if health_result.returncode == 0:
+            health = health_result.stdout.strip() or None
+
+    status = health or state
+    healthy = status == "healthy" or state == "running"
+    return {
+        "name": name,
+        "status": status,
+        "healthy": healthy,
+        "running": running,
+        "error": None,
+    }
+
+
+def docker_snapshot() -> dict[str, Any]:
+    names: set[str] = set(DEFAULT_DOCKER_CONTAINERS)
+    try:
+        services = ServiceCatalog().load()
+    except Exception:
+        services = {}
+
+    if isinstance(services, dict):
+        for service in services.values():
+            if not isinstance(service, dict):
+                continue
+            container = service.get("docker_container")
+            if isinstance(container, str) and container.strip():
+                names.add(container.strip())
+
+    items = [docker_container_status(name) for name in sorted(names)]
+    running = sum(1 for item in items if item.get("running"))
+    return {
+        "count": len(items),
+        "running": running,
+        "items": items,
+    }
+
+
 def build_runtime_status(
     *,
     service: str = DEFAULT_SERVICE,
@@ -357,6 +439,7 @@ def build_runtime_status(
             **network_links_snapshot(),
             "header_token": network_header_token(),
         },
+        "docker": docker_snapshot(),
         "processes": process_snapshot(),
         "applications": {
             "directory": str(apps_dir),

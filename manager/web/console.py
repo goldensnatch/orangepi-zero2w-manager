@@ -1629,6 +1629,18 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
             return
 
+        if request.path == "/api/runtime/docker/action":
+
+            payload = self.parse_json_body()
+
+            if payload is None:
+
+                return
+
+            self.handle_runtime_docker_action(payload)
+
+            return
+
         if request.path == "/mkdir":
 
             payload = self.parse_json_body()
@@ -1940,6 +1952,68 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "transfer": updated.get("transfer", {}),
                 "source": str(network_transfer_runtime.DEFAULT_NETWORK_TRANSFER_CONFIG_PATH),
+            }
+        )
+
+    def handle_runtime_docker_action(self, payload: dict[str, object]) -> None:
+
+        name = str(payload.get("name") or "").strip()
+        action = str(payload.get("action") or "").strip().lower()
+        allowed_actions = {"start", "stop", "restart"}
+
+        if not name:
+            self.send_json_error(HTTPStatus.BAD_REQUEST, "invalid_docker_request", detail="name is required")
+            return
+        if action not in allowed_actions:
+            self.send_json_error(HTTPStatus.BAD_REQUEST, "invalid_docker_request", detail="action must be start, stop, or restart")
+            return
+
+        runtime = runtime_status_payload()
+        observed = runtime.get("observed", {}) if isinstance(runtime, dict) else {}
+        docker_state = observed.get("docker", {}) if isinstance(observed, dict) else {}
+        items = docker_state.get("items", []) if isinstance(docker_state, dict) else []
+        known_names = {
+            str(item.get("name")).strip()
+            for item in items
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+
+        if name not in known_names:
+            self.send_json_error(HTTPStatus.NOT_FOUND, "docker_container_unknown", detail=name)
+            return
+
+        try:
+            result = subprocess.run(
+                ["docker", action, name],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            self.send_json_error(HTTPStatus.BAD_GATEWAY, "docker_action_failed", detail=str(exc))
+            return
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip() or f"docker {action} failed"
+            self.send_json_error(HTTPStatus.BAD_GATEWAY, "docker_action_failed", detail=detail)
+            return
+
+        append_audit_event(
+            "DOCKER_ACTION",
+            actor=USERNAME,
+            client_ip=self.client_ip,
+            path=self.path,
+            container=name,
+            action=action,
+        )
+        self.send_json(
+            {
+                "ok": True,
+                "name": name,
+                "action": action,
+                "stdout": (result.stdout or "").strip(),
+                "stderr": (result.stderr or "").strip(),
             }
         )
 
