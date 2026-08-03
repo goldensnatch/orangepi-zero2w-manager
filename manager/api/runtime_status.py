@@ -21,6 +21,10 @@ DEFAULT_STATE_FILE = Path(
 DEFAULT_BUTTON_SOCKET = Path(
     "/run/rocky/buttons.sock"
 )
+DEFAULT_TESSERAE_MANAGED_IDS = {
+    "pwnagotchi",
+    "tesserae",
+}
 DEFAULT_DOCKER_CONTAINERS = (
     "rocky-pihole",
     "rocky-transfer-gluetun",
@@ -402,6 +406,70 @@ def docker_snapshot() -> dict[str, Any]:
     }
 
 
+def managed_services_snapshot(
+    published_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    try:
+        services = ServiceCatalog().load()
+    except Exception:
+        services = {}
+
+    active_app_id = None
+    if isinstance(published_state, dict):
+        application_state = published_state.get("application")
+        if isinstance(application_state, dict):
+            active_app_id = str(
+                application_state.get("active_id") or ""
+            ).strip() or None
+
+    items: list[dict[str, Any]] = []
+
+    if not isinstance(services, dict):
+        services = {}
+
+    for app_id, service in services.items():
+        if not isinstance(service, dict):
+            continue
+
+        service_id = str(app_id).strip()
+        unit = str(service.get("systemd_service") or "").strip()
+        if service_id not in DEFAULT_TESSERAE_MANAGED_IDS or not unit:
+            continue
+
+        service_info = service_status(unit)
+        state = str(service_info.get("state") or "unknown")
+        active = bool(service_info.get("active") is True)
+        status = state
+        if active_app_id == service_id and active:
+            status = "foreground"
+
+        items.append(
+            {
+                "id": service_id,
+                "name": str(service.get("name") or service_id.title()),
+                "description": str(service.get("description") or ""),
+                "unit": unit,
+                "kind": "systemd_display",
+                "resident_display": bool(service.get("resident_display")),
+                "menu_visible": bool(service.get("menu_visible", True)),
+                "active": active,
+                "healthy": active,
+                "status": status,
+                "foreground": active_app_id == service_id,
+                "working_directory": str(
+                    service.get("working_directory") or ""
+                ),
+            }
+        )
+
+    items.sort(key=lambda item: str(item.get("name") or "").lower())
+
+    return {
+        "count": len(items),
+        "items": items,
+    }
+
+
 def build_runtime_status(
     *,
     service: str = DEFAULT_SERVICE,
@@ -439,6 +507,11 @@ def build_runtime_status(
             **network_links_snapshot(),
             "header_token": network_header_token(),
         },
+        "managed_services": managed_services_snapshot(
+            published_state
+            if isinstance(published_state, dict)
+            else None
+        ),
         "docker": docker_snapshot(),
         "processes": process_snapshot(),
         "applications": {

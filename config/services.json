@@ -131,21 +131,44 @@
   },
   "tesserae": {
     "background_allowed": false,
-    "command": [
-      "/opt/zero2w-manager/venv/bin/python3",
-      "-m",
-      "apps.tesserae"
-    ],
+    "command": null,
     "description": "Tesserae e-paper dashboard client",
     "display_owner": true,
+    "resident_display": true,
     "environment": {
       "PYTHONPATH": "/opt/zero2w-manager",
       "PYTHONUNBUFFERED": "1"
     },
+    "installed_path": "/opt/zero2w-manager/config/tesserae-client.json",
     "menu_order": 70,
     "menu_visible": true,
     "name": "Tesserae",
     "network_owner": false,
+    "start_services": [
+      "tesserae-client.service"
+    ],
+    "freeze_services": [
+      "tesserae-client.service"
+    ],
+    "pause_services": [
+      "tesserae-client.service"
+    ],
+    "pause_timeout_seconds": 12,
+    "thaw_services": [
+      "tesserae-client.service"
+    ],
+    "resume_services": [
+      "tesserae-client.service"
+    ],
+    "resume_timeout_seconds": 20,
+    "resume_accept_states": [
+      "active",
+      "activating"
+    ],
+    "stop_services": [
+      "tesserae-client.service"
+    ],
+    "systemd_service": "tesserae-client.service",
     "working_directory": "/opt/zero2w-manager"
   },
   "pihole": {

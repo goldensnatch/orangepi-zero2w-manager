@@ -1,0 +1,16 @@
+[Unit]
+Description=Tesserae E-Paper Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zero2w-manager
+Environment=PYTHONPATH=/opt/zero2w-manager
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/zero2w-manager/venv/bin/python3 -m apps.tesserae
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

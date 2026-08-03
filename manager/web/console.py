@@ -1641,6 +1641,18 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
             return
 
+        if request.path == "/api/runtime/managed-service/action":
+
+            payload = self.parse_json_body()
+
+            if payload is None:
+
+                return
+
+            self.handle_runtime_managed_service_action(payload)
+
+            return
+
         if request.path == "/mkdir":
 
             payload = self.parse_json_body()
@@ -2011,6 +2023,67 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             {
                 "ok": True,
                 "name": name,
+                "action": action,
+                "stdout": (result.stdout or "").strip(),
+                "stderr": (result.stderr or "").strip(),
+            }
+        )
+
+    def handle_runtime_managed_service_action(self, payload: dict[str, object]) -> None:
+
+        service_id = str(payload.get("id") or "").strip()
+        action = str(payload.get("action") or "").strip().lower()
+        allowed_actions = {"start", "stop", "restart"}
+
+        if not service_id:
+            self.send_json_error(HTTPStatus.BAD_REQUEST, "invalid_managed_service_request", detail="id is required")
+            return
+        if action not in allowed_actions:
+            self.send_json_error(HTTPStatus.BAD_REQUEST, "invalid_managed_service_request", detail="action must be start, stop, or restart")
+            return
+
+        catalog = ServiceCatalog()
+        service = catalog.get(service_id)
+        if not isinstance(service, dict):
+            self.send_json_error(HTTPStatus.NOT_FOUND, "managed_service_unknown", detail=service_id)
+            return
+
+        unit = str(service.get("systemd_service") or "").strip()
+        if not unit:
+            self.send_json_error(HTTPStatus.BAD_REQUEST, "managed_service_uncontrollable", detail=f"{service_id} is not backed by systemd")
+            return
+
+        try:
+            result = subprocess.run(
+                ["systemctl", action, unit],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            self.send_json_error(HTTPStatus.BAD_GATEWAY, "managed_service_action_failed", detail=str(exc))
+            return
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip() or f"systemctl {action} failed"
+            self.send_json_error(HTTPStatus.BAD_GATEWAY, "managed_service_action_failed", detail=detail)
+            return
+
+        append_audit_event(
+            "MANAGED_SERVICE_ACTION",
+            actor=USERNAME,
+            client_ip=self.client_ip,
+            path=self.path,
+            service_id=service_id,
+            unit=unit,
+            action=action,
+        )
+        self.send_json(
+            {
+                "ok": True,
+                "id": service_id,
+                "unit": unit,
                 "action": action,
                 "stdout": (result.stdout or "").strip(),
                 "stderr": (result.stderr or "").strip(),
