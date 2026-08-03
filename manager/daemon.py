@@ -1199,7 +1199,7 @@ class ManagerDaemon:
         if not selected_id:
             return self._mode_footer_text()
         if str(selected_id) == CURRENT_MODE_MENU_ITEM_ID:
-            return self._mode_footer_text()
+            return f"{self._mode_footer_text()} | HOLD OPEN"[:76]
         try:
             service = self._service_configuration(str(selected_id))
         except Exception:
@@ -2394,7 +2394,9 @@ class ManagerDaemon:
         app_name = str(selected["name"])
 
         if app_id == CURRENT_MODE_MENU_ITEM_ID:
-            self.show_menu(self._mode_footer_text(), force_full=True)
+            self._activate_service(
+                self._mode_selector_service()
+            )
             return
 
         self.log.info(
@@ -2430,6 +2432,27 @@ class ManagerDaemon:
             return
 
         self._activate_service(service)
+
+    def _mode_selector_service(self) -> dict[str, Any]:
+        return {
+            "id": "mode_selector",
+            "name": "Modes",
+            "description": "Select the active Rocky operating mode",
+            "type": "application",
+            "command": [
+                "/opt/zero2w-manager/venv/bin/python3",
+                "-m",
+                "apps.mode_selector",
+            ],
+            "environment": {
+                "PYTHONPATH": "/opt/zero2w-manager",
+                "PYTHONUNBUFFERED": "1",
+            },
+            "display_owner": True,
+            "background_allowed": False,
+            "network_owner": False,
+            "working_directory": "/opt/zero2w-manager",
+        }
 
     def _stop_selected_menu_item(self) -> bool:
         selected = self.menu.selected
