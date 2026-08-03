@@ -206,7 +206,7 @@
     "name": "Torrentz",
     "network_owner": false,
     "type": "application",
-    "url": "http://127.0.0.1:8080/",
+    "url": "http://127.0.0.1:8088/",
     "systemd_service": null,
     "docker_container": "rocky-transfer-qbittorrent",
     "working_directory": "/opt/zero2w-manager"

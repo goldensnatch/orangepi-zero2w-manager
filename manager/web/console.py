@@ -3,6 +3,7 @@ from __future__ import annotations
 
 
 import base64
+from http.cookies import SimpleCookie
 
 import cgi
 
@@ -2028,7 +2029,21 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
     def token_authorized_proxy(self, request, app_id: str) -> bool:
 
         supplied = parse_qs(request.query).get("access_token", [""])[0]
-        return bool(supplied) and self.validate_proxy_token(supplied, app_id)
+        if bool(supplied) and self.validate_proxy_token(supplied, app_id):
+            return True
+
+        cookie_header = self.headers.get("Cookie", "")
+        if not cookie_header:
+            return False
+        try:
+            cookie = SimpleCookie()
+            cookie.load(cookie_header)
+        except Exception:
+            return False
+        morsel = cookie.get(f"rocky_proxy_{app_id}")
+        if morsel is None:
+            return False
+        return self.validate_proxy_token(morsel.value, app_id)
 
     def apps_payload(self) -> dict[str, object]:
 
@@ -2082,7 +2097,14 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         return {"entries": entries, "config": config}
 
-    def proxy_response(self, status: int, payload: bytes, headers: dict[str, str]) -> None:
+    def proxy_response(
+        self,
+        status: int,
+        payload: bytes,
+        headers: dict[str, str],
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
 
         self.send_response(status)
         excluded = {"content-length", "transfer-encoding", "connection", "content-encoding"}
@@ -2090,6 +2112,9 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             if name.lower() in excluded:
                 continue
             self.send_header(name, value)
+        if extra_headers:
+            for name, value in extra_headers.items():
+                self.send_header(name, value)
         self.send_header("Content-Length", str(len(payload)))
         self._send_security_headers()
         self.end_headers()
@@ -2102,6 +2127,13 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         if not (self.authenticated() or self.token_authorized_proxy(request, app_id)):
             self.send_error_page(401, "Authentication required")
             return
+        extra_headers: dict[str, str] = {}
+        supplied_token = parse_qs(request.query).get("access_token", [""])[0]
+        if supplied_token and self.validate_proxy_token(supplied_token, app_id):
+            extra_headers["Set-Cookie"] = (
+                f"rocky_proxy_{app_id}={supplied_token}; "
+                f"Path=/proxy/{quote(app_id)}/; HttpOnly; SameSite=Lax"
+            )
         base = self.proxy_base_for_app(app_id)
         if not base:
             self.send_error_page(404, "Unknown proxied application")
@@ -2136,12 +2168,12 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             with urlopen(proxy_request, timeout=20) as response:
                 payload = response.read()
                 headers = {name: value for name, value in response.headers.items()}
-                self.proxy_response(response.status, payload, headers)
+                self.proxy_response(response.status, payload, headers, extra_headers=extra_headers)
                 return
         except HTTPError as exc:
             payload = exc.read()
             headers = {name: value for name, value in exc.headers.items()}
-            self.proxy_response(exc.code, payload, headers)
+            self.proxy_response(exc.code, payload, headers, extra_headers=extra_headers)
             return
         except URLError as exc:
             self.send_json_error(HTTPStatus.BAD_GATEWAY, "proxy_failed", detail=str(exc))
