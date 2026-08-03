@@ -97,6 +97,7 @@
     "display_owner": true,
     "resident_display": true,
     "display_switch_target": "pwnagotchi",
+    "pause_strategy": "terminate",
     "environment": {
       "HOME": "/opt/ragnar",
       "PYTHONPATH": "/opt/ragnar/app",

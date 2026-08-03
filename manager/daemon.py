@@ -1474,6 +1474,70 @@ class ManagerDaemon:
             )
             return False
 
+    def _managed_resident_pause_strategy(
+        self,
+        service: dict[str, Any],
+    ) -> str:
+        strategy = str(service.get("pause_strategy") or "").strip().lower()
+        if strategy in {"terminate", "stop"}:
+            return "terminate"
+        return "signal"
+
+    def _terminate_managed_resident_display(
+        self,
+        service: dict[str, Any],
+        *,
+        clear_state: bool = True,
+    ) -> bool:
+        app_id = str(service.get("id") or "")
+        pid, running = self._managed_process_matches(app_id)
+        if not pid or not running:
+            if clear_state:
+                state = self._load_managed_process_state()
+                if str(state.get("active_mode") or "") == app_id:
+                    state.update(
+                        {
+                            "active_mode": "idle",
+                            "active_pid": None,
+                            "status": "stopped",
+                            "last_error": None,
+                        }
+                    )
+                    self._save_managed_process_state(state)
+            return True
+
+        try:
+            os.killpg(pid, signal.SIGTERM)
+            deadline = time.monotonic() + 6.0
+            while time.monotonic() < deadline:
+                _pid, still_running = self._managed_process_matches(app_id)
+                if not still_running:
+                    break
+                time.sleep(0.2)
+            _pid, still_running = self._managed_process_matches(app_id)
+            if still_running:
+                os.killpg(pid, signal.SIGKILL)
+        except Exception:
+            self.log.exception(
+                "Failed to terminate resident display process for %s",
+                app_id,
+            )
+            return False
+
+        if clear_state:
+            state = self._load_managed_process_state()
+            if str(state.get("active_mode") or "") == app_id:
+                state.update(
+                    {
+                        "active_mode": "idle",
+                        "active_pid": None,
+                        "status": "stopped",
+                        "last_error": None,
+                    }
+                )
+                self._save_managed_process_state(state)
+        return True
+
     def _kill_systemd_unit_signal(
         self,
         unit: str,
@@ -1571,6 +1635,9 @@ class ManagerDaemon:
 
             unit = str(service.get("systemd_service") or "").strip()
             return self._kill_systemd_unit_signal(unit, "STOP")
+
+        if self._managed_resident_pause_strategy(service) == "terminate":
+            return self._terminate_managed_resident_display(service)
 
         return self._signal_service_process_group(service, signal.SIGSTOP)
 
@@ -2133,6 +2200,9 @@ class ManagerDaemon:
     ) -> bool:
         if self._is_systemd_display_service(service):
             return self._stop_systemd_display_service(service)
+
+        if self._managed_resident_pause_strategy(service) == "terminate":
+            return self._terminate_managed_resident_display(service)
 
         # Resume first so TERM/KILL are not left pending against a stopped task.
         self._resume_resident_display_service(service)
