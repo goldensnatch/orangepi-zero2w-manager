@@ -1816,6 +1816,16 @@ class ManagerDaemon:
         *,
         force_full: bool = False,
     ) -> None:
+        should_reclaim_display = (
+            not self.menu_visible
+            or bool(self.active_app_id)
+            or self._active_resident_display_service(allow_settling=True) is not None
+        )
+
+        if should_reclaim_display:
+            self._quiesce_all_resident_displays()
+            time.sleep(0.2)
+
         with self._state_lock:
             if not self.running:
                 return
