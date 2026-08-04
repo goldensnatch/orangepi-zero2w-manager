@@ -442,6 +442,7 @@ class ManagerDaemon:
         self.active_app_id: str | None = None
         self._active_display_ready_at = 0.0
         self._suppressed_resident_exit_until: dict[str, float] = {}
+        self._menu_transition_in_progress = False
 
         # Used to prevent the application exit callback from drawing
         # the menu while a deliberate long-press stop is still running.
@@ -1831,6 +1832,9 @@ class ManagerDaemon:
         *,
         force_full: bool = False,
     ) -> None:
+        with self._state_lock:
+            self._menu_transition_in_progress = True
+
         should_reclaim_display = (
             not self.menu_visible
             or bool(self.active_app_id)
@@ -1844,73 +1848,77 @@ class ManagerDaemon:
 
         force_full = force_full or should_reclaim_display
 
-        with self._state_lock:
-            if not self.running:
-                return
+        try:
+            with self._state_lock:
+                if not self.running:
+                    return
 
-            self._clear_hardware_prep_state()
+                self._clear_hardware_prep_state()
 
-            try:
-                if hasattr(self.menu, "item_formatter"):
-                    self.menu.item_formatter = self._menu_item_label
-                if hasattr(self.menu, "header_provider"):
-                    self.menu.header_provider = self._menu_header_payload
-                if hasattr(self.menu, "footer_override"):
-                    self.menu.footer_override = self._selection_footer_text(self.menu.selected if self.menu.items else None)
-                self.menu.render(
-                    message,
-                    force_full=force_full,
+                try:
+                    if hasattr(self.menu, "item_formatter"):
+                        self.menu.item_formatter = self._menu_item_label
+                    if hasattr(self.menu, "header_provider"):
+                        self.menu.header_provider = self._menu_header_payload
+                    if hasattr(self.menu, "footer_override"):
+                        self.menu.footer_override = self._selection_footer_text(self.menu.selected if self.menu.items else None)
+                    self.menu.render(
+                        message,
+                        force_full=force_full,
+                    )
+                except Exception:
+                    self.menu_visible = False
+                    self.log.exception(
+                        "Failed to display manager menu"
+                    )
+                    return
+
+                self.menu_visible = True
+                self.active_app_id = None
+                self._clear_active_display_settling()
+
+                selected = self.menu.selected
+                selected_id = (
+                    str(selected.get("id"))
+                    if isinstance(selected, dict)
+                    and selected.get("id")
+                    else None
                 )
-            except Exception:
-                self.menu_visible = False
-                self.log.exception(
-                    "Failed to display manager menu"
+
+                self.state_publisher.set_foreground_application(
+                    None,
+                    transition="launcher_activated",
+                    publish=False,
                 )
-                return
-
-            self.menu_visible = True
-            self.active_app_id = None
-            self._clear_active_display_settling()
-
-            selected = self.menu.selected
-            selected_id = (
-                str(selected.get("id"))
-                if isinstance(selected, dict)
-                and selected.get("id")
-                else None
-            )
-
-            self.state_publisher.set_foreground_application(
-                None,
-                transition="launcher_activated",
-                publish=False,
-            )
-            self.state_publisher.set_launcher_selection(
-                selected_id,
-                publish=False,
-            )
-            self._publish_runtime_state(
-                {
-                    "runtime": {
-                        "status": "running",
-                        "mode": "launcher",
-                    },
-                    "foreground_application": None,
-                    "launcher": {
-                        "active": True,
-                        "selected_application": selected_id,
-                    },
-                    "display": {
-                        "connected": True,
-                        "mode": "launcher",
-                    },
-                    "application": {
-                        "active_id": None,
-                        "active_pid": None,
-                        "status": "idle",
-                    },
-                }
-            )
+                self.state_publisher.set_launcher_selection(
+                    selected_id,
+                    publish=False,
+                )
+                self._publish_runtime_state(
+                    {
+                        "runtime": {
+                            "status": "running",
+                            "mode": "launcher",
+                        },
+                        "foreground_application": None,
+                        "launcher": {
+                            "active": True,
+                            "selected_application": selected_id,
+                        },
+                        "display": {
+                            "connected": True,
+                            "mode": "launcher",
+                        },
+                        "application": {
+                            "active_id": None,
+                            "active_pid": None,
+                            "status": "idle",
+                        },
+                    }
+                )
+        finally:
+            with self._state_lock:
+                self._menu_transition_in_progress = False
 
     def hide_menu(self) -> None:
         with self._state_lock:
@@ -1950,6 +1958,10 @@ class ManagerDaemon:
         event: ButtonEvent,
     ) -> None:
         """KEY_1 tap moves up; hold selects; extra hold stops."""
+
+        if self._menu_transition_in_progress:
+            self.log.info("Ignoring navigation during menu transition")
+            return
 
         if (
             not self.menu_visible
@@ -2770,6 +2782,10 @@ class ManagerDaemon:
         event: ButtonEvent,
     ) -> None:
         """KEY_ENTER tap moves down; hold selects; extra hold stops."""
+
+        if self._menu_transition_in_progress:
+            self.log.info("Ignoring select during menu transition")
+            return
 
         if (
             not self.menu_visible
