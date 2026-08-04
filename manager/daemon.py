@@ -526,6 +526,8 @@ class ManagerDaemon:
 
         if not self._is_resident_display_app(service):
             return None
+        if not self._service_is_running(service):
+            return None
 
         return service
 
@@ -1963,6 +1965,13 @@ class ManagerDaemon:
             self.log.info("Ignoring navigation during menu transition")
             return
 
+        if not self.menu_visible and not self._app_is_running():
+            self.log.warning(
+                "Recovering launcher from hidden state without active foreground app"
+            )
+            self.show_menu("Launcher recovered")
+            return
+
         if (
             not self.menu_visible
             and self._active_display_is_settling()
@@ -2785,6 +2794,13 @@ class ManagerDaemon:
 
         if self._menu_transition_in_progress:
             self.log.info("Ignoring select during menu transition")
+            return
+
+        if not self.menu_visible and not self._app_is_running():
+            self.log.warning(
+                "Recovering launcher from hidden state without active foreground app"
+            )
+            self.show_menu("Launcher recovered")
             return
 
         if (
