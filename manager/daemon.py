@@ -1743,6 +1743,21 @@ class ManagerDaemon:
             return None
         return target.strip()
 
+    def _reclaim_display_surface(self) -> None:
+        try:
+            self.menu.prepare_for_app()
+        except Exception:
+            self.log.exception(
+                "Failed to reclaim display surface"
+            )
+        finally:
+            try:
+                self.menu.close()
+            except Exception:
+                self.log.exception(
+                    "Failed to close menu display after reclaim"
+                )
+
     def _should_short_press_swap_active_display(self) -> bool:
         service = self._active_resident_display_service()
         if not service:
@@ -1824,7 +1839,10 @@ class ManagerDaemon:
 
         if should_reclaim_display:
             self._quiesce_all_resident_displays()
+            self._reclaim_display_surface()
             time.sleep(0.2)
+
+        force_full = force_full or should_reclaim_display
 
         with self._state_lock:
             if not self.running:
@@ -2649,9 +2667,11 @@ class ManagerDaemon:
             if not self._pause_resident_display_service(source_service):
                 self.show_menu(f"Switch failed: {source_id}")
                 return True
+            self._reclaim_display_surface()
             time.sleep(0.2)
         else:
             self._stop_active_application()
+            self._reclaim_display_surface()
             time.sleep(0.75)
 
         try:
