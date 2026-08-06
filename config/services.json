@@ -95,7 +95,7 @@
   "ragnar": {
     "background_allowed": false,
     "command": [
-      "/opt/ragnar/venv/bin/python3",
+      "/opt/ragnar/app/venv/bin/python",
       "/opt/ragnar/app/Ragnar.py"
     ],
     "description": "Network discovery and analysis",
