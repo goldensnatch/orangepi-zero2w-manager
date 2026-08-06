@@ -51,11 +51,12 @@
     "description": "Wireless learning companion",
     "display_owner": true,
     "resident_display": true,
-    "display_switch_target": "ragnar",
     "environment": {},
     "installed_path": "/opt/pwnagotchi",
     "menu_order": 30,
     "menu_visible": true,
+    "menu_priority_action": "stop",
+    "resident_short_press_action": "forward",
     "name": "Pwnagotchi",
     "network_owner": true,
     "start_services": [
@@ -63,16 +64,20 @@
       "pwnagotchi.service"
     ],
     "freeze_services": [
+      "bettercap.service",
       "pwnagotchi.service"
     ],
     "pause_services": [
+      "bettercap.service",
       "pwnagotchi.service"
     ],
     "pause_timeout_seconds": 12,
     "thaw_services": [
+      "bettercap.service",
       "pwnagotchi.service"
     ],
     "resume_services": [
+      "bettercap.service",
       "pwnagotchi.service"
     ],
     "resume_timeout_seconds": 20,
@@ -96,7 +101,6 @@
     "description": "Network discovery and analysis",
     "display_owner": true,
     "resident_display": true,
-    "display_switch_target": "pwnagotchi",
     "pause_strategy": "terminate",
     "environment": {
       "HOME": "/opt/ragnar",
@@ -105,6 +109,8 @@
     },
     "menu_order": 20,
     "menu_visible": true,
+    "menu_priority_action": "stop",
+    "resident_short_press_action": "forward",
     "name": "Ragnar",
     "network_owner": true,
     "working_directory": "/opt/ragnar/app"
@@ -210,6 +216,87 @@
     "systemd_service": "klipper",
     "docker_container": null,
     "working_directory": "/opt/zero2w-manager"
+  },
+  "entertainment": {
+    "activate_mode": "entertainment",
+    "background_allowed": false,
+    "command": [
+      "/opt/zero2w-manager/venv/bin/python3",
+      "-m",
+      "apps.entertainment"
+    ],
+    "description": "Virtual media center with Torrentz, Radarr, Sonarr, Bazarr, and StashApp",
+    "display_owner": true,
+    "environment": {
+      "PYTHONPATH": "/opt/zero2w-manager",
+      "PYTHONUNBUFFERED": "1"
+    },
+    "menu_order": 12,
+    "menu_visible": true,
+    "name": "Entertainment",
+    "network_owner": false,
+    "type": "application",
+    "working_directory": "/opt/zero2w-manager"
+  },
+  "radarr": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Movie automation and library management",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 210,
+    "menu_visible": false,
+    "name": "Radarr",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:7878/",
+    "systemd_service": null,
+    "docker_container": "rocky-media-radarr"
+  },
+  "sonarr": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Series automation and library management",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 211,
+    "menu_visible": false,
+    "name": "Sonarr",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:8989/",
+    "systemd_service": null,
+    "docker_container": "rocky-media-sonarr"
+  },
+  "bazarr": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Subtitle automation for movies and series",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 212,
+    "menu_visible": false,
+    "name": "Bazarr",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:6767/",
+    "systemd_service": null,
+    "docker_container": "rocky-media-bazarr"
+  },
+  "stashapp": {
+    "background_allowed": true,
+    "command": null,
+    "description": "StashApp personal media browser",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 213,
+    "menu_visible": false,
+    "name": "StashApp",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:9999/",
+    "systemd_service": null,
+    "docker_container": "rocky-media-stashapp"
   },
   "torrentz": {
     "activate_mode": "torrent_fortress",

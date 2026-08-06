@@ -29,6 +29,10 @@ DEFAULT_DOCKER_CONTAINERS = (
     "rocky-pihole",
     "rocky-transfer-gluetun",
     "rocky-transfer-qbittorrent",
+    "rocky-media-radarr",
+    "rocky-media-sonarr",
+    "rocky-media-bazarr",
+    "rocky-media-stashapp",
 )
 
 

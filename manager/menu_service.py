@@ -33,7 +33,7 @@ class MenuService:
         self._lock = threading.RLock()
 
         self.display_manager = DisplayManager(
-            partial_limit=15,
+            partial_limit=120,
         )
         self.footer_override: str | None = None
         self.item_formatter: Callable[[dict[str, Any], bool, int], str] | None = None

@@ -2197,6 +2197,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         runtime = runtime_status_payload()
         published = runtime.get("published", {}).get("state", {})
         transfer_state = published.get("transfer", {}) if isinstance(published, dict) else {}
+        published_web_services = published.get("web_services", {}) if isinstance(published, dict) else {}
+        published_web_cache = published.get("web_service_cache", {}) if isinstance(published, dict) else {}
         active_app = published.get("application", {}).get("active_id") if isinstance(published, dict) else None
         config = network_transfer_runtime.NetworkTransferConfig().snapshot()
         entries: list[dict[str, object]] = []
@@ -2206,15 +2208,36 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             app_id = str(service.get("id"))
             service_type = str(service.get("type", "application"))
             status = "ready"
+            live_service = published_web_services.get(app_id) if isinstance(published_web_services, dict) else None
+            cached_service = published_web_cache.get(app_id) if isinstance(published_web_cache, dict) else None
             if service_type == "background_service":
                 unit = str(service.get("systemd_service") or service.get("service") or "")
-                state = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False, timeout=5).stdout.strip() if unit else "unknown"
-                status = state or "unknown"
+                container = str(service.get("docker_container") or "")
+                if isinstance(live_service, dict) and isinstance(live_service.get("active"), bool):
+                    status = "running" if live_service.get("active") else "stopped"
+                elif unit:
+                    state = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False, timeout=5).stdout.strip()
+                    status = state or "unknown"
+                elif container:
+                    inspect = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", container], capture_output=True, text=True, check=False, timeout=5)
+                    status = inspect.stdout.strip() or "stopped"
+                else:
+                    status = "unknown"
             elif active_app == app_id:
                 status = "running"
             raw_url = service.get("url")
             public_url = self.publicize_service_url(str(raw_url)) if isinstance(raw_url, str) and raw_url else None
-            tokenized_url = self.proxy_public_url(app_id) + f"?access_token={quote(self.build_proxy_token(app_id))}" if public_url else None
+            tokenized_url = None
+            if isinstance(live_service, dict):
+                tokenized_url = str(live_service.get("tokenized_proxy_url") or "").strip() or None
+                public_url = str(live_service.get("url") or public_url or "").strip() or public_url
+            if tokenized_url is None and isinstance(cached_service, dict):
+                tokenized_url = str(cached_service.get("last_tokenized_proxy_url") or "").strip() or None
+                if public_url is None:
+                    cached_public = str(cached_service.get("last_url") or "").strip()
+                    public_url = cached_public or public_url
+            if tokenized_url is None and public_url:
+                tokenized_url = self.proxy_public_url(app_id) + f"?access_token={quote(self.build_proxy_token(app_id))}"
             entries.append({
                 "id": app_id,
                 "name": str(service.get("name", app_id.title())),

@@ -233,6 +233,88 @@ DEFAULT_MODE_CATALOG = {
             },
         },
         {
+            "mode_id": "entertainment",
+            "label": "Entertainment",
+            "description": "VPN-backed media center with Torrentz, Radarr, Sonarr, Bazarr, and StashApp.",
+            "category": "entertainment",
+            "network": {
+                "profile": "wireguard_admin",
+                "vpn_required": True,
+                "vpn_provider": "protonvpn",
+                "mobile_exit_node": True,
+                "allow_lan_admin": True,
+                "allow_wireguard_admin": True,
+                "allow_public_admin": False,
+                "firewall_policy": "balanced",
+                "dns_mode": "pihole_lan_and_wg",
+                "mac_randomization": False,
+                "public_network_posture": "cautious",
+            },
+            "dns": {
+                "provider": "pihole",
+                "serve_lan": True,
+                "serve_wireguard_clients": True,
+                "upstream_mode": "vpn_preferred",
+                "ad_blocking": True,
+                "safe_search": False,
+                "blocklists_profile": "light",
+            },
+            "admin": {
+                "rocky_admin": {"enabled": True, "lan": True, "wireguard": True, "public": False},
+                "qb_webui": {"enabled": True, "lan": True, "wireguard": True},
+                "terminal": {"enabled": True},
+                "auth_profile": "hardened",
+            },
+            "transfer": {
+                "enabled": True,
+                "client": "qbittorrent",
+                "vpn_enforced": True,
+                "kill_switch": True,
+                "webui_exposure": "lan_and_wireguard",
+                "privacy_profile": "balanced",
+                "bittorrent": {
+                    "anonymous_mode": False,
+                    "force_encryption": False,
+                    "dht": True,
+                    "pex": True,
+                    "lsd": False,
+                    "upnp": False,
+                    "fixed_port": 6881,
+                    "random_port": False,
+                    "port_forwarding": False,
+                },
+            },
+            "portable": {
+                "enabled": False,
+                "hotspot_enabled": False,
+                "hotspot_ssid": None,
+                "captive_portal": False,
+                "passive_collection": False,
+                "active_collection": False,
+                "storage_capture": False,
+            },
+            "power": {
+                "profile": "normal",
+                "suspend_nonessential_services": False,
+                "reduced_polling": False,
+                "display_refresh_policy": "normal",
+                "radios_policy": "normal",
+            },
+            "pikvm": {"policy": "auto"},
+            "display": {
+                "surface": "browser_and_epaper",
+                "epaper_menu_enabled": True,
+                "epaper_qr_behavior": "mode_aware",
+                "test_path": "zero2w_manager_menu",
+            },
+            "ui": {
+                "warning_level": "normal",
+                "reversible_to": "safe",
+                "color_hint": "purple",
+                "expose_advanced_toggles": False,
+            },
+        },
+        {
             "mode_id": "daily_driver",
             "label": "Daily Driver",
             "description": "Normal home use with Pi-hole and admin access, transfer disabled.",
@@ -452,10 +534,25 @@ class ManagerDaemon:
         self._last_config_reconcile_at = 0.0
         self._last_mode_signature: str | None = None
         self._last_menu_chrome_refresh_at = 0.0
+        self._status_cache_ttl_seconds = 1.0
+        self._mode_payload_cache: dict[str, Any] | None = None
+        self._mode_payload_cached_at = 0.0
+        self._menu_header_cache: dict[str, str] | None = None
+        self._menu_header_cached_at = 0.0
+        self._systemd_status_cache: dict[str, tuple[float, str]] = {}
+        self._docker_status_cache: dict[str, tuple[float, str]] = {}
 
         self._clear_isp_prep_request()
         self._clear_hardware_prep_state()
         self._publish_reconciled_infrastructure_state(force_refresh=True)
+
+    def _clear_runtime_caches(self) -> None:
+        self._mode_payload_cache = None
+        self._mode_payload_cached_at = 0.0
+        self._menu_header_cache = None
+        self._menu_header_cached_at = 0.0
+        self._systemd_status_cache.clear()
+        self._docker_status_cache.clear()
 
     def _mark_active_display_settling(
         self,
@@ -579,8 +676,23 @@ class ManagerDaemon:
 
         return changed
 
-    def _docker_container_health(self, name: str) -> str:
+    def _docker_container_health(
+        self,
+        name: str,
+        *,
+        force_refresh: bool = False,
+    ) -> str:
         """Return 'healthy', 'running', 'stopped', or 'unknown'."""
+        cache_key = str(name).strip()
+        now = time.monotonic()
+        cached = self._docker_status_cache.get(cache_key)
+        if (
+            not force_refresh
+            and cached is not None
+            and now - cached[0] < self._status_cache_ttl_seconds
+        ):
+            return cached[1]
+
         try:
             import subprocess as _sp
             r = _sp.run(
@@ -588,19 +700,28 @@ class ManagerDaemon:
                 capture_output=True, text=True, timeout=5, check=False,
             )
             if r.returncode != 0:
-                return 'stopped'
+                status = 'stopped'
+                self._docker_status_cache[cache_key] = (now, status)
+                return status
             state = r.stdout.strip()
             if state != 'running':
-                return 'stopped'
+                status = 'stopped'
+                self._docker_status_cache[cache_key] = (now, status)
+                return status
             h = _sp.run(
                 ['docker', 'inspect', '--format', '{{.State.Health.Status}}', name],
                 capture_output=True, text=True, timeout=5, check=False,
             )
             if h.returncode == 0 and h.stdout.strip() == 'healthy':
-                return 'healthy'
-            return 'running'
+                status = 'healthy'
+            else:
+                status = 'running'
+            self._docker_status_cache[cache_key] = (now, status)
+            return status
         except Exception:
-            return 'unknown'
+            status = 'unknown'
+            self._docker_status_cache[cache_key] = (now, status)
+            return status
 
     def _docker_ensure(self, name: str, running: bool) -> bool:
         """Start or stop a Docker container. Returns True on success."""
@@ -611,9 +732,11 @@ class ManagerDaemon:
                 ['docker', action, name],
                 capture_output=True, text=True, timeout=30, check=False,
             )
+            self._clear_runtime_caches()
             return r.returncode == 0
         except Exception:
             self.log.exception('docker %s %s failed', action, name)
+            self._clear_runtime_caches()
             return False
 
     def _reconcile_mode_actions(self, effective_mode_id: str) -> None:
@@ -622,6 +745,23 @@ class ManagerDaemon:
         GLUETUN = 'rocky-transfer-gluetun'
         QBT = 'rocky-transfer-qbittorrent'
         PIHOLE = 'rocky-pihole'
+        MEDIA_CONTAINERS = (
+            'rocky-media-radarr',
+            'rocky-media-sonarr',
+            'rocky-media-bazarr',
+            'rocky-media-stashapp',
+        )
+
+        def ensure_media(running: bool) -> None:
+            for container_name in MEDIA_CONTAINERS:
+                container_health = self._docker_container_health(container_name)
+                if running:
+                    if container_health == 'stopped':
+                        self.log.info('%s: starting %s', effective_mode_id, container_name)
+                        self._docker_ensure(container_name, running=True)
+                elif container_health != 'stopped':
+                    self.log.info('%s: stopping %s', effective_mode_id, container_name)
+                    self._docker_ensure(container_name, running=False)
 
         pihole_health = self._docker_container_health(PIHOLE)
         if pihole_health == 'stopped':
@@ -638,6 +778,7 @@ class ManagerDaemon:
             if gluetun_health == 'stopped':
                 self.log.info('safe mode: starting %s', GLUETUN)
                 self._docker_ensure(GLUETUN, running=True)
+            ensure_media(False)
 
         elif effective_mode_id == 'torrent_fortress':
             # Start gluetun first, wait for healthy, then start qBittorrent
@@ -662,6 +803,36 @@ class ManagerDaemon:
                     'torrent_fortress: skipping %s start - gluetun not healthy (%s)',
                     QBT, gluetun_health,
                 )
+            ensure_media(False)
+
+        elif effective_mode_id == 'entertainment':
+            gluetun_health = self._docker_container_health(GLUETUN)
+            if gluetun_health == 'stopped':
+                self.log.info('entertainment: starting %s', GLUETUN)
+                self._docker_ensure(GLUETUN, running=True)
+                for _ in range(15):
+                    _time.sleep(2)
+                    gluetun_health = self._docker_container_health(GLUETUN)
+                    if gluetun_health in ('healthy', 'running'):
+                        break
+                self.log.info('entertainment: %s health=%s', GLUETUN, gluetun_health)
+
+            if gluetun_health in ('healthy', 'running'):
+                qbt_health = self._docker_container_health(QBT)
+                if qbt_health == 'stopped':
+                    self.log.info('entertainment: starting %s', QBT)
+                    self._docker_ensure(QBT, running=True)
+            else:
+                self.log.warning(
+                    'entertainment: keeping %s stopped - gluetun not healthy (%s)',
+                    QBT, gluetun_health,
+                )
+                qbt_health = self._docker_container_health(QBT)
+                if qbt_health != 'stopped':
+                    self.log.info('entertainment: stopping %s', QBT)
+                    self._docker_ensure(QBT, running=False)
+
+            ensure_media(True)
 
         elif effective_mode_id in ('pihole_only', 'daily_driver'):
             qbt_health = self._docker_container_health(QBT)
@@ -672,6 +843,7 @@ class ManagerDaemon:
             if gluetun_health != 'stopped':
                 self.log.info('%s: stopping %s', effective_mode_id, GLUETUN)
                 self._docker_ensure(GLUETUN, running=False)
+            ensure_media(False)
 
         elif effective_mode_id == 'print_lab':
             qbt_health = self._docker_container_health(QBT)
@@ -687,6 +859,7 @@ class ManagerDaemon:
                 if r.stdout.strip() != 'active':
                     self.log.info('print_lab: starting %s', svc)
                     __import__('subprocess').run(['systemctl', 'start', svc], check=False)
+            ensure_media(False)
         else:
             self.log.debug('_reconcile_mode_actions: no action for mode %s', effective_mode_id)
 
@@ -701,7 +874,7 @@ class ManagerDaemon:
         ):
             self._last_config_reconcile_at = now
             try:
-                mode_payload = self._resolve_mode_payload()
+                mode_payload = self._resolve_mode_payload(force_refresh=True)
                 mode_signature = json.dumps(mode_payload.get("mode", {}), sort_keys=True)
                 if mode_signature != self._last_mode_signature:
                     self._last_mode_signature = mode_signature
@@ -796,6 +969,13 @@ class ManagerDaemon:
         return "USB"
 
     def _menu_header_payload(self) -> dict[str, str]:
+        now = time.monotonic()
+        if (
+            self._menu_header_cache is not None
+            and now - self._menu_header_cached_at < self._status_cache_ttl_seconds
+        ):
+            return dict(self._menu_header_cache)
+
         mode_payload = self._resolve_mode_payload()
         stamp = time.time()
         local_dt = time.strftime("%H:%M", time.localtime(stamp))
@@ -810,10 +990,13 @@ class ManagerDaemon:
         show_date = int(time.time() // 6) % 2 == 1
         clock_text = chicago_dt if show_date else local_dt
         network_text = network_header_token(network_links_snapshot())
-        return {
+        payload = {
             "title": f"ROCKY {self._mode_abbreviation(mode_payload)}"[:18],
             "meta": f"{self._battery_header_text()} {network_text} {clock_text}"[:16],
         }
+        self._menu_header_cache = payload
+        self._menu_header_cached_at = now
+        return dict(payload)
 
     def _read_json_file(self, path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -831,12 +1014,34 @@ class ManagerDaemon:
     def _load_current_mode_request(self) -> dict[str, Any]:
         return self._read_json_file(CURRENT_MODE_REQUEST_PATH, self._default_current_mode_request())
 
-    def _mode_service_status(self, unit: str) -> str:
+    def _mode_service_status(
+        self,
+        unit: str,
+        *,
+        force_refresh: bool = False,
+    ) -> str:
+        cache_key = str(unit).strip()
+        if not cache_key:
+            return 'unknown'
+
+        now = time.monotonic()
+        cached = self._systemd_status_cache.get(cache_key)
+        if (
+            not force_refresh
+            and cached is not None
+            and now - cached[0] < self._status_cache_ttl_seconds
+        ):
+            return cached[1]
+
         try:
             result = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False, timeout=5)
-            return result.stdout.strip() or result.stderr.strip() or 'unknown'
+            status = result.stdout.strip() or result.stderr.strip() or 'unknown'
+            self._systemd_status_cache[cache_key] = (now, status)
+            return status
         except Exception:
-            return 'unknown'
+            status = 'unknown'
+            self._systemd_status_cache[cache_key] = (now, status)
+            return status
 
     def _run_systemctl(
         self,
@@ -858,6 +1063,7 @@ class ManagerDaemon:
                 timeout=timeout,
             )
             if result.returncode == 0:
+                self._clear_runtime_caches()
                 return True
 
             self.log.warning(
@@ -866,6 +1072,7 @@ class ManagerDaemon:
                 ", ".join(filtered),
                 result.stderr.strip() or result.stdout.strip() or result.returncode,
             )
+            self._clear_runtime_caches()
             return False
         except Exception:
             self.log.exception(
@@ -873,6 +1080,7 @@ class ManagerDaemon:
                 action,
                 ", ".join(filtered),
             )
+            self._clear_runtime_caches()
             return False
 
     def _await_systemd_service_state(
@@ -951,9 +1159,12 @@ class ManagerDaemon:
             if not isinstance(raw_url, str) or not raw_url:
                 continue
             unit = service.get('systemd_service')
+            container = service.get('docker_container')
             active = False
             if unit:
                 active = self._mode_service_status(str(unit)) == 'active'
+            elif container:
+                active = self._docker_container_health(str(container)) in {'healthy', 'running'}
             elif self.active_app_id == app_id:
                 active = True
             public_url = self._publicize_service_url(raw_url)
@@ -1027,7 +1238,19 @@ class ManagerDaemon:
             effective.setdefault('display', {})['test_path'] = str(overrides['epaper_test_path'])
         return effective
 
-    def _resolve_mode_payload(self) -> dict[str, Any]:
+    def _resolve_mode_payload(
+        self,
+        *,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._mode_payload_cache is not None
+            and now - self._mode_payload_cached_at < self._status_cache_ttl_seconds
+        ):
+            return json.loads(json.dumps(self._mode_payload_cache))
+
         catalog = self._load_mode_catalog()
         request = self._load_current_mode_request()
         modes = catalog.get('modes', []) if isinstance(catalog.get('modes'), list) else []
@@ -1053,7 +1276,7 @@ class ManagerDaemon:
             warnings.append('transfer_stack_active_under_safe_mode')
 
         service_state = self._build_web_services_state(effective_mode)
-        return {
+        payload = {
             'mode': {
                 'desired': {
                     'mode_id': effective_mode_id,
@@ -1074,6 +1297,10 @@ class ManagerDaemon:
                     'qbittorrent': qbt_status,
                     'pihole': self._mode_service_status('pihole-FTL'),
                     'pikvm': str(effective_mode.get('pikvm', {}).get('policy', 'auto')),
+                    'radarr': self._docker_container_health('rocky-media-radarr'),
+                    'sonarr': self._docker_container_health('rocky-media-sonarr'),
+                    'bazarr': self._docker_container_health('rocky-media-bazarr'),
+                    'stashapp': self._docker_container_health('rocky-media-stashapp'),
                 },
                 'policies': {
                     'lan_admin': bool(effective_mode.get('network', {}).get('allow_lan_admin', True)),
@@ -1087,6 +1314,9 @@ class ManagerDaemon:
             'web_services': service_state.get('web_services', {}),
             'web_service_cache': service_state.get('web_service_cache', {}),
         }
+        self._mode_payload_cache = payload
+        self._mode_payload_cached_at = now
+        return json.loads(json.dumps(payload))
 
     def _mode_footer_text(self, mode_payload: dict[str, Any] | None = None) -> str:
         payload = mode_payload or self._resolve_mode_payload()
@@ -1171,6 +1401,7 @@ class ManagerDaemon:
             json.dumps(updated, indent=2) + "\n",
             encoding="utf-8",
         )
+        self._clear_runtime_caches()
         self._last_mode_signature = None
         return True
 
@@ -1203,25 +1434,10 @@ class ManagerDaemon:
             return self._mode_footer_text()
         if str(selected_id) == CURRENT_MODE_MENU_ITEM_ID:
             return f"{self._mode_footer_text()} | HOLD OPEN"[:76]
-        try:
-            service = self._service_configuration(str(selected_id))
-        except Exception:
-            return self._mode_footer_text()
-
-        description = str(service.get('description') or selected.get('description') or '').strip()
-        status_hint = self._service_status_hint(service)
-        action_hint = self._selection_action_hint(service)
-
-        segments = []
+        description = str(selected.get('description') or '').strip()
         if description:
-            segments.append(description[:38])
-        if status_hint or action_hint:
-            segments.append(f"{status_hint} {action_hint}".strip())
-
-        footer = " | ".join(segment for segment in segments if segment)
-        if not footer:
-            footer = self._mode_footer_text()
-        return footer[:76]
+            return description[:76]
+        return self._mode_footer_text()
 
     def _load_isp_prep_request(self) -> dict[str, Any] | None:
         try:
@@ -1366,20 +1582,7 @@ class ManagerDaemon:
             healthy = bool(live.get("healthy", True))
             compact_name = label.upper().replace(" MODE", "")[:24]
             return f"{compact_name} [{'OK' if healthy else 'WARN'}]"
-
-        try:
-            service = self._service_configuration(str(item.get("id") or ""))
-        except Exception:
-            service = dict(item)
-
-        name = str(item.get("name") or service.get("name") or item.get("id") or "App")
-        status_hint = self._service_status_hint(service)
-
-        if status_hint:
-            compact_name = name[:24]
-            return f"{compact_name} [{status_hint[:8]}]"
-
-        return name
+        return str(item.get("name") or item.get("id") or "App")
 
     def install_signal_handlers(self) -> None:
         signal.signal(signal.SIGINT, self.shutdown)
@@ -1485,6 +1688,17 @@ class ManagerDaemon:
         if strategy in {"terminate", "stop"}:
             return "terminate"
         return "signal"
+
+    def _resident_menu_priority_action(
+        self,
+        service: dict[str, Any] | None,
+    ) -> str:
+        if not isinstance(service, dict):
+            return "pause"
+        action = str(service.get("menu_priority_action") or "").strip().lower()
+        if action in {"stop", "terminate"}:
+            return "stop"
+        return "pause"
 
     def _terminate_managed_resident_display(
         self,
@@ -1606,6 +1820,9 @@ class ManagerDaemon:
         self,
         service: dict[str, Any],
     ) -> bool:
+        if self._resident_menu_priority_action(service) == "stop":
+            return self._stop_resident_display_service(service)
+
         if self._is_systemd_display_service(service):
             freeze_units = service.get("freeze_services")
             if isinstance(freeze_units, list) and freeze_units:
@@ -1746,20 +1963,24 @@ class ManagerDaemon:
             return None
         return target.strip()
 
+    def _resident_short_press_action(
+        self,
+        service: dict[str, Any] | None,
+    ) -> str:
+        if not isinstance(service, dict):
+            return "forward"
+        action = str(service.get("resident_short_press_action") or "").strip().lower()
+        if action in {"swap", "menu", "forward"}:
+            return action
+        return "forward"
+
     def _reclaim_display_surface(self) -> None:
         try:
-            self.menu.prepare_for_app()
+            self.menu.close()
         except Exception:
             self.log.exception(
-                "Failed to reclaim display surface"
+                "Failed to close menu display after reclaim"
             )
-        finally:
-            try:
-                self.menu.close()
-            except Exception:
-                self.log.exception(
-                    "Failed to close menu display after reclaim"
-                )
 
     def _should_short_press_swap_active_display(self) -> bool:
         service = self._active_resident_display_service()
@@ -1780,7 +2001,12 @@ class ManagerDaemon:
             return False
 
         if event.held_seconds < ButtonService.LONG_PRESS_SECONDS:
-            return self._toggle_companion_display()
+            action = self._resident_short_press_action(service)
+            if action == "swap":
+                return self._toggle_companion_display()
+            if action == "menu":
+                return self._park_active_display_to_menu()
+            return False
 
         return self._park_active_display_to_menu()
 
@@ -1847,8 +2073,6 @@ class ManagerDaemon:
             self._quiesce_all_resident_displays()
             self._reclaim_display_surface()
             time.sleep(0.2)
-
-        force_full = force_full or should_reclaim_display
 
         try:
             with self._state_lock:
@@ -1989,20 +2213,12 @@ class ManagerDaemon:
         if self._app_is_running() or not self.menu_visible:
             if (
                 not self.menu_visible
-                and event.held_seconds < ButtonService.LONG_PRESS_SECONDS
-                and self._should_short_press_swap_active_display()
-                and self._toggle_companion_display()
-            ):
-                return
-
-            if (
-                not self.menu_visible
                 and event.held_seconds >= ButtonService.LONG_PRESS_SECONDS
                 and self._park_active_display_to_menu()
             ):
                 return
 
-            self.log.info(
+            self.log.debug(
                 "Forwarding Up/Select button to active application"
             )
 
@@ -2059,25 +2275,10 @@ class ManagerDaemon:
             )
             return
 
-        self.log.info(
+        self.log.debug(
             "Navigation button: %s held %.2fs",
             event.name,
             event.held_seconds,
-        )
-
-        self.state_publisher.set_buttons(
-            last_event=True,
-            publish=False,
-        )
-        self._publish_runtime_state(
-            {
-                "input": {
-                    "provider": "lradc",
-                    "action": "up_or_select",
-                    "name": event.name,
-                    "held_seconds": event.held_seconds,
-                }
-            }
         )
 
         try:
@@ -2814,25 +3015,10 @@ class ManagerDaemon:
             )
             return
 
-        self.log.info(
+        self.log.debug(
             "Select button: %s held %.2fs",
             event.name,
             event.held_seconds,
-        )
-
-        self.state_publisher.set_buttons(
-            last_event=True,
-            publish=False,
-        )
-        self._publish_runtime_state(
-            {
-                "input": {
-                    "provider": "lradc",
-                    "action": "down_or_select",
-                    "name": event.name,
-                    "held_seconds": event.held_seconds,
-                }
-            }
         )
 
         try:
@@ -2850,14 +3036,6 @@ class ManagerDaemon:
 
             if (
                 not self.menu_visible
-                and not is_long_press
-                and self._should_short_press_swap_active_display()
-                and self._toggle_companion_display()
-            ):
-                return
-
-            if (
-                not self.menu_visible
                 and is_long_press
                 and not is_very_long_press
                 and self._park_active_display_to_menu()
@@ -2868,7 +3046,7 @@ class ManagerDaemon:
                 self._app_is_running()
                 and not is_long_press
             ):
-                self.log.info(
+                self.log.debug(
                     "Forwarding Down button to active application"
                 )
 
@@ -2884,7 +3062,7 @@ class ManagerDaemon:
                 and is_long_press
                 and not is_very_long_press
             ):
-                self.log.info(
+                self.log.debug(
                     "Forwarding Select hold to active application"
                 )
 
@@ -2968,14 +3146,9 @@ class ManagerDaemon:
                 render=False,
             )
 
-            self.log.info(
+            self.log.debug(
                 "Selected menu item: %s",
                 selected.get("id"),
-            )
-
-            selected_id = selected.get("id")
-            self.state_publisher.set_launcher_selection(
-                str(selected_id) if selected_id else None
             )
             if hasattr(self.menu, "footer_override"):
                 self.menu.footer_override = self._selection_footer_text(selected)
