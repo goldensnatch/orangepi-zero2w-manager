@@ -83,26 +83,23 @@ class EntertainmentApp(RockyButtonApp):
         time.sleep(self.update_interval)
 
     def on_button(self, event: ButtonEvent) -> None:
-        if event.action != "short_press":
-            return
-
         with self._lock:
             if self.page == "menu":
-                if event.button == "up":
+                if event.button == "up" and event.action == "short_press":
                     self.selected_index = (self.selected_index - 1) % len(MENU_ITEMS)
                     self._dirty = True
-                elif event.button == "down":
+                elif event.button == "down" and event.action == "short_press":
                     self.selected_index = (self.selected_index + 1) % len(MENU_ITEMS)
                     self._dirty = True
-                elif event.button == "select":
+                elif event.button == "select" and event.action == "long_press":
                     self.page_service_id = str(MENU_ITEMS[self.selected_index]["id"])
                     self.page = "detail"
                     self._dirty = True
             else:
-                if event.button in {"up", "down"}:
+                if event.button in {"up", "down"} and event.action == "short_press":
                     self.page = "menu"
                     self._dirty = True
-                elif event.button == "select":
+                elif event.button == "select" and event.action == "long_press":
                     self._dirty = True
 
     def _load_state(self) -> dict[str, Any]:
