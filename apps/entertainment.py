@@ -178,7 +178,7 @@ class EntertainmentApp(RockyButtonApp):
             self._dirty = False
             return
         if self.display is not None:
-            self.display.display(self.display.getbuffer(image))
+            self.display.show(image)
         self._last_render_signature = signature
         self._dirty = False
 
