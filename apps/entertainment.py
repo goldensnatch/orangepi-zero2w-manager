@@ -61,7 +61,7 @@ class EntertainmentApp(RockyButtonApp):
     def setup(self) -> None:
         LOGGER.info("Entertainment app started")
         self.display_context = Display()
-        self.display = self.display_context.init()
+        self.display = self.display_context.__enter__()
         self._dirty = True
         self._render(force=True)
 
@@ -69,7 +69,7 @@ class EntertainmentApp(RockyButtonApp):
         LOGGER.info("Entertainment app stopped")
         if self.display_context is not None:
             try:
-                self.display_context.sleep()
+                self.display_context.__exit__(None, None, None)
             except Exception:
                 LOGGER.exception("Failed to sleep display")
 
