@@ -238,6 +238,21 @@
     "type": "application",
     "working_directory": "/opt/zero2w-manager"
   },
+  "prowlarr": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Indexer manager and proxy for Radarr and Sonarr",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 209,
+    "menu_visible": false,
+    "name": "Prowlarr",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:9696/",
+    "systemd_service": null,
+    "docker_container": "rocky-media-prowlarr"
+  },
   "radarr": {
     "background_allowed": true,
     "command": null,

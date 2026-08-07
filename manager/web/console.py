@@ -2696,6 +2696,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         # Always inject media stack services regardless of menu_visible flag
         MEDIA_SERVICES = [
+            {"id": "prowlarr",  "name": "Prowlarr",  "description": "Indexer manager and proxy for Radarr/Sonarr", "container": "rocky-media-prowlarr",  "url": "http://192.168.1.199:9696/", "port": 9696},
             {"id": "radarr",   "name": "Radarr",   "description": "Movie automation and library management",    "container": "rocky-media-radarr",   "url": "http://192.168.1.199:7878/", "port": 7878},
             {"id": "sonarr",   "name": "Sonarr",   "description": "Series automation and library management",   "container": "rocky-media-sonarr",   "url": "http://192.168.1.199:8989/", "port": 8989},
             {"id": "bazarr",   "name": "Bazarr",   "description": "Subtitle automation for movies and series",  "container": "rocky-media-bazarr",   "url": "http://192.168.1.199:6767/", "port": 6767},
@@ -2826,10 +2827,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         vpn = config.get("vpn", {})
         privacy = config.get("privacy_relay", {})
         transfer = config.get("transfer", {})
-        MEDIA_IDS = {"radarr", "sonarr", "bazarr", "stashapp", "transfer-stack"}
+        MEDIA_IDS = {"prowlarr", "radarr", "sonarr", "bazarr", "stashapp", "transfer-stack"}
         EMOJI_MAP = {
             "radarr": "🎬", "sonarr": "📺", "bazarr": "💬", "stashapp": "🗄️",
-            "transfer-stack": "⚡", "torrentz": "⚡", "pihole": "🛡️",
+            "prowlarr": "🔎", "transfer-stack": "⚡", "torrentz": "⚡", "pihole": "🛡️",
             "3d_printer": "🖨️", "diagnostic": "🔧", "reader": "📖",
             "tesserae": "🖼️", "pikvm": "🖥️", "pwnagotchi": "👾",
             "ragnar": "🔍", "entertainment": "🎭",
