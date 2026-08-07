@@ -238,6 +238,21 @@
     "type": "application",
     "working_directory": "/opt/zero2w-manager"
   },
+  "jellyfin": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Open-source self-hosted media server, no account required",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 207,
+    "menu_visible": false,
+    "name": "Jellyfin",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:8096/",
+    "systemd_service": null,
+    "docker_container": "rocky-media-jellyfin"
+  },
   "overseerr": {
     "background_allowed": true,
     "command": null,
