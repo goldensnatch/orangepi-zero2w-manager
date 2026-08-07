@@ -1,0 +1,19 @@
+[Unit]
+Description=Rocky Switch Transfer LAN file server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/rocky-transfer/complete
+Environment=SWITCH_TRANSFER_ROOT=/mnt/rocky-transfer/complete
+Environment=SWITCH_TRANSFER_HOST=0.0.0.0
+Environment=SWITCH_TRANSFER_PORT=8077
+ExecStart=/usr/bin/python3 /opt/zero2w-manager/scripts/switch_transfer_server.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

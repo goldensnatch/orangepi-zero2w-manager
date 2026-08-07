@@ -2478,13 +2478,15 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             return
 
         unit = str(service.get("systemd_service") or "").strip()
-        if not unit:
+        user_unit = str(service.get("systemd_user_service") or "").strip()
+        if not unit and not user_unit:
             self.send_json_error(HTTPStatus.BAD_REQUEST, "managed_service_uncontrollable", detail=f"{service_id} is not backed by systemd")
             return
+        systemctl_cmd = ["systemctl", "--user", action, user_unit] if user_unit else ["systemctl", action, unit]
 
         try:
             result = subprocess.run(
-                ["systemctl", action, unit],
+                systemctl_cmd,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -2646,6 +2648,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     status = "running" if live_service.get("active") else "stopped"
                 elif unit:
                     state = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False, timeout=5).stdout.strip()
+                    status = state or "unknown"
+                elif str(service.get("systemd_user_service") or "").strip():
+                    user_unit = str(service.get("systemd_user_service") or "").strip()
+                    state = subprocess.run(["systemctl", "--user", "is-active", user_unit], capture_output=True, text=True, check=False, timeout=5).stdout.strip()
                     status = state or "unknown"
                 elif container:
                     inspect = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", container], capture_output=True, text=True, check=False, timeout=5)

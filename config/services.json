@@ -351,5 +351,21 @@
     "systemd_service": null,
     "docker_container": "rocky-transfer-qbittorrent",
     "working_directory": "/opt/zero2w-manager"
+  },
+  "switch_transfer": {
+    "background_allowed": true,
+    "command": null,
+    "description": "LAN file server rooted at completed Rocky transfers for Switch/CyberFoil pulls",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 12,
+    "menu_visible": true,
+    "name": "Switch Transfer",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:8077/",
+    "systemd_service": null,
+    "systemd_user_service": "rocky-switch-transfer.service",
+    "docker_container": null
   }
 }
