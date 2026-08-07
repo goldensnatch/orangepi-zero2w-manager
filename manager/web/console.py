@@ -1171,6 +1171,35 @@ pre {{
 
 }}
 
+.metrics-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+}}
+
+.metric-card {{
+    background: #0d1117;
+    border: 1px solid #1e3a5f;
+    border-radius: 10px;
+    padding: 16px;
+    text-align: center;
+}}
+
+.metric-label {{
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}}
+
+.metric-value {{
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text);
+}}
+
 </style>
 
 </head>
@@ -2678,7 +2707,19 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 continue
             try:
                 r = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", svc["container"]], capture_output=True, text=True, check=False, timeout=5)
-                status = "running" if r.stdout.strip() == "running" else ("stopped" if r.returncode == 0 else "stopped")
+                raw = r.stdout.strip()
+                if raw == "running":
+                    status = "running"
+                elif r.returncode != 0:
+                    # docker not accessible — try TCP connect to confirm port is up
+                    import socket as _sock
+                    try:
+                        with _sock.create_connection(("127.0.0.1", svc["port"]), timeout=1):
+                            status = "running"
+                    except OSError:
+                        status = "stopped"
+                else:
+                    status = "stopped"
             except Exception:
                 status = "unknown"
             public_url = self.publicize_service_url(svc["url"])
@@ -2990,88 +3031,96 @@ document.getElementById('transfer-form').addEventListener('submit', async (event
     def handle_status(self) -> None:
 
         state_path = RUNTIME_ROOT / "state.json"
-
         state_available = state_path.is_file()
 
+        def _cpu_percent() -> str:
+            try:
+                vals1 = [int(x) for x in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
+                import time as _t; _t.sleep(0.3)
+                vals2 = [int(x) for x in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
+                dt = sum(vals2) - sum(vals1)
+                return f"{100.0 * (1 - (vals2[3] - vals1[3]) / dt):.1f}%" if dt else "N/A"
+            except Exception:
+                return "N/A"
 
+        def _mem() -> str:
+            try:
+                d = {k.strip(): int(v.split()[0]) for line in Path("/proc/meminfo").read_text().splitlines() for k, v in [line.split(":", 1)]}
+                total, avail = d.get("MemTotal", 0), d.get("MemAvailable", 0)
+                used = total - avail
+                return f"{used // 1024} MB / {total // 1024} MB ({100 * used // total if total else 0}%)"
+            except Exception:
+                return "N/A"
+
+        def _disk() -> str:
+            try:
+                r = subprocess.run(["df", "-h", "/"], capture_output=True, text=True, check=False, timeout=5)
+                parts = r.stdout.strip().splitlines()[1].split()
+                return f"{parts[2]} used / {parts[1]} total ({parts[4]})"
+            except Exception:
+                return "N/A"
+
+        def _uptime() -> str:
+            try:
+                secs = float(Path("/proc/uptime").read_text().split()[0])
+                d, r = divmod(int(secs), 86400); h, r = divmod(r, 3600)
+                return f"{d}d {h}h {r // 60}m"
+            except Exception:
+                return "N/A"
+
+        def _temp() -> str:
+            for p in ["/sys/class/thermal/thermal_zone0/temp", "/sys/class/thermal/thermal_zone1/temp"]:
+                try:
+                    return f"{int(Path(p).read_text().strip()) / 1000:.1f} \u00b0C"
+                except Exception:
+                    continue
+            return "N/A"
+
+        def _load() -> str:
+            try:
+                v = Path("/proc/loadavg").read_text().split()
+                return f"{v[0]} / {v[1]} / {v[2]}"
+            except Exception:
+                return "N/A"
+
+        cpu, mem, disk, uptime, temp, load = _cpu_percent(), _mem(), _disk(), _uptime(), _temp(), _load()
 
         body = f"""
-
 <section>
-
-<h2>Runtime</h2>
-
+<div class="section-label">&#x26A1; SYSTEM METRICS</div>
+<div class="metrics-grid">
+  <div class="metric-card"><div class="metric-label">CPU USAGE</div><div class="metric-value">{html.escape(cpu)}</div></div>
+  <div class="metric-card"><div class="metric-label">CPU TEMP</div><div class="metric-value">{html.escape(temp)}</div></div>
+  <div class="metric-card"><div class="metric-label">MEMORY</div><div class="metric-value">{html.escape(mem)}</div></div>
+  <div class="metric-card"><div class="metric-label">DISK</div><div class="metric-value">{html.escape(disk)}</div></div>
+  <div class="metric-card"><div class="metric-label">UPTIME</div><div class="metric-value">{html.escape(uptime)}</div></div>
+  <div class="metric-card"><div class="metric-label">LOAD AVG</div><div class="metric-value">{html.escape(load)}</div></div>
+</div>
+</section>
+<section>
+<div class="section-label">&#x1F5A5; RUNTIME</div>
 <p>
-
 <span class="badge">Host: {html.escape(socket.gethostname())}</span>
-
-<span class="badge">Console: 0.3</span>
-
+<span class="badge">Console: 0.4</span>
 <span class="badge">Generated: {html.escape(utc_now())}</span>
-
 </p>
-
 <pre>{html.escape(runtime_status())}</pre>
-
 </section>
-
-
-
 <section>
-
-<h2>Security Foundation</h2>
-
+<div class="section-label">&#x1F512; SECURITY FOUNDATION</div>
 <p>
-
-<span class="badge">CSRF header: X-Rocky-CSRF</span>
-
+<span class="badge">CSRF: X-Rocky-CSRF</span>
 <span class="badge">Body limit: {html.escape(human_size(MAX_REQUEST_BYTES))}</span>
-
-<span class="badge">Audit log: {html.escape(str(AUDIT_LOG_PATH))}</span>
-
+<span class="badge">Audit: {html.escape(str(AUDIT_LOG_PATH))}</span>
 </p>
-
-<p class="muted">Patch 003A groundwork and Patch 004 filesystem routes are active. Audit events are emitted to the service journal, with optional file mirroring when writable.</p>
-
 </section>
-
-
-
 <section>
-
-<h2>Published State</h2>
-
-<p>
-
-Available:
-
-<strong>{"yes" if state_available else "no"}</strong>
-
-</p>
-
+<div class="section-label">&#x1F4E1; PUBLISHED STATE</div>
+<p>Available: <strong>{"yes" if state_available else "no"}</strong></p>
 <p class="muted">{html.escape(str(state_path))}</p>
-
 </section>
-
-
-
-<section>
-
-<h2>Controls architecture</h2>
-
-<pre>LRADC buttons ââ
-
-USB HID keys ââââ¼â&gt; InputManager â&gt; EventBus â&gt; RuntimeController
-
-Rotary encoder ââ</pre>
-
-</section>
-
 """
-
         self.send_html("Status", body)
-
-
 
     def handle_logs(self) -> None:
 
