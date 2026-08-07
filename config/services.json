@@ -238,6 +238,21 @@
     "type": "application",
     "working_directory": "/opt/zero2w-manager"
   },
+  "overseerr": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Netflix-style media request and discovery portal",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 208,
+    "menu_visible": false,
+    "name": "Overseerr",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:5055/",
+    "systemd_service": null,
+    "docker_container": "rocky-media-overseerr"
+  },
   "prowlarr": {
     "background_allowed": true,
     "command": null,
