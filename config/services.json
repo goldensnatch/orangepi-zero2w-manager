@@ -253,20 +253,20 @@
     "systemd_service": null,
     "docker_container": "rocky-media-jellyfin"
   },
-  "overseerr": {
+  "jellyseerr": {
     "background_allowed": true,
     "command": null,
-    "description": "Netflix-style media request and discovery portal",
+    "description": "Media request portal with Jellyfin support",
     "display_owner": false,
     "environment": {},
     "menu_order": 208,
     "menu_visible": false,
-    "name": "Overseerr",
+    "name": "Jellyseerr",
     "network_owner": false,
     "type": "background_service",
     "url": "http://127.0.0.1:5055/",
     "systemd_service": null,
-    "docker_container": "rocky-media-overseerr"
+    "docker_container": "rocky-media-jellyseerr"
   },
   "prowlarr": {
     "background_allowed": true,
