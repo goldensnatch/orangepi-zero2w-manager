@@ -294,7 +294,7 @@
     "name": "StashApp",
     "network_owner": false,
     "type": "background_service",
-    "url": "http://127.0.0.1:9999/",
+    "url": "http://127.0.0.1:9090/",
     "systemd_service": null,
     "docker_container": "rocky-media-stashapp"
   },
