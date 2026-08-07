@@ -2665,6 +2665,34 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 "qr_url": self.qr_image_url(tokenized_proxy_url),
             })
 
+        # Always inject media stack services regardless of menu_visible flag
+        MEDIA_SERVICES = [
+            {"id": "radarr",   "name": "Radarr",   "description": "Movie automation and library management",    "container": "rocky-media-radarr",   "url": "http://192.168.1.199:7878/", "port": 7878},
+            {"id": "sonarr",   "name": "Sonarr",   "description": "Series automation and library management",   "container": "rocky-media-sonarr",   "url": "http://192.168.1.199:8989/", "port": 8989},
+            {"id": "bazarr",   "name": "Bazarr",   "description": "Subtitle automation for movies and series",  "container": "rocky-media-bazarr",   "url": "http://192.168.1.199:6767/", "port": 6767},
+            {"id": "stashapp", "name": "StashApp", "description": "Personal media browser and organizer",       "container": "rocky-media-stashapp", "url": "http://192.168.1.199:9090/", "port": 9090},
+        ]
+        existing_ids = {str(e.get("id")) for e in entries}
+        for svc in MEDIA_SERVICES:
+            if svc["id"] in existing_ids:
+                continue
+            try:
+                r = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", svc["container"]], capture_output=True, text=True, check=False, timeout=5)
+                status = "running" if r.stdout.strip() == "running" else ("stopped" if r.returncode == 0 else "stopped")
+            except Exception:
+                status = "unknown"
+            public_url = self.publicize_service_url(svc["url"])
+            entries.append({
+                "id": svc["id"],
+                "name": svc["name"],
+                "description": svc["description"],
+                "status": status,
+                "type": "background_service",
+                "open_url": public_url,
+                "mobile_url": public_url,
+                "qr_url": self.qr_image_url(public_url) if public_url else None,
+            })
+
         return {"entries": entries, "config": config}
 
     def proxy_response(
