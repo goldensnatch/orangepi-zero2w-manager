@@ -328,21 +328,6 @@
     "systemd_service": null,
     "docker_container": "rocky-media-bazarr"
   },
-  "stashapp": {
-    "background_allowed": true,
-    "command": null,
-    "description": "StashApp personal media browser",
-    "display_owner": false,
-    "environment": {},
-    "menu_order": 213,
-    "menu_visible": false,
-    "name": "StashApp",
-    "network_owner": false,
-    "type": "background_service",
-    "url": "http://127.0.0.1:9090/",
-    "systemd_service": null,
-    "docker_container": "rocky-media-stashapp"
-  },
   "torrentz": {
     "activate_mode": "torrent_fortress",
     "background_allowed": false,

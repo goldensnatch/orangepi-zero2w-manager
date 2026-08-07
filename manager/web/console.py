@@ -2702,7 +2702,6 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             {"id": "radarr",   "name": "Radarr",   "description": "Movie automation and library management",    "container": "rocky-media-radarr",   "url": "http://192.168.1.199:7878/", "port": 7878},
             {"id": "sonarr",   "name": "Sonarr",   "description": "Series automation and library management",   "container": "rocky-media-sonarr",   "url": "http://192.168.1.199:8989/", "port": 8989},
             {"id": "bazarr",   "name": "Bazarr",   "description": "Subtitle automation for movies and series",  "container": "rocky-media-bazarr",   "url": "http://192.168.1.199:6767/", "port": 6767},
-            {"id": "stashapp", "name": "StashApp", "description": "Personal media browser and organizer",       "container": "rocky-media-stashapp", "url": "http://192.168.1.199:9090/", "port": 9090},
         ]
         existing_ids = {str(e.get("id")) for e in entries}
         for svc in MEDIA_SERVICES:
@@ -2829,9 +2828,9 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         vpn = config.get("vpn", {})
         privacy = config.get("privacy_relay", {})
         transfer = config.get("transfer", {})
-        MEDIA_IDS = {"jellyfin", "jellyseerr", "prowlarr", "radarr", "sonarr", "bazarr", "stashapp", "transfer-stack"}
+        MEDIA_IDS = {"jellyfin", "jellyseerr", "prowlarr", "radarr", "sonarr", "bazarr", "transfer-stack"}
         EMOJI_MAP = {
-            "radarr": "🎬", "sonarr": "📺", "bazarr": "💬", "stashapp": "🗄️",
+            "radarr": "🎬", "sonarr": "📺", "bazarr": "💬",
             "prowlarr": "🔎", "jellyseerr": "🎯", "jellyfin": "🎞️", "transfer-stack": "⚡", "torrentz": "⚡", "pihole": "🛡️",
             "3d_printer": "🖨️", "diagnostic": "🔧", "reader": "📖",
             "tesserae": "🖼️", "pikvm": "🖥️", "pwnagotchi": "👾",
