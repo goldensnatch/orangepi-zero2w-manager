@@ -547,11 +547,28 @@ def page(title: str, body: str) -> bytes:
 
 <style>
 
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
 :root {{
 
     color-scheme: dark;
 
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+    --bg: #060a0f;
+    --bg-card: rgba(10, 16, 26, 0.85);
+    --bg-section: rgba(8, 13, 22, 0.9);
+    --border: rgba(0, 212, 255, 0.12);
+    --border-hover: rgba(0, 212, 255, 0.55);
+    --cyan: #00d4ff;
+    --cyan-dim: rgba(0, 212, 255, 0.08);
+    --purple: #7c3aed;
+    --purple-dim: rgba(124, 58, 237, 0.1);
+    --purple-border: rgba(124, 58, 237, 0.3);
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --green: #22c55e;
+    --red: #ef4444;
 
 }}
 
@@ -559,9 +576,15 @@ body {{
 
     margin: 0;
 
-    background: #111418;
+    background: var(--bg);
 
-    color: #e9eef5;
+    background-image:
+        radial-gradient(ellipse at 20% 0%, rgba(0, 212, 255, 0.04) 0%, transparent 60%),
+        radial-gradient(ellipse at 80% 100%, rgba(124, 58, 237, 0.04) 0%, transparent 60%);
+
+    color: var(--text);
+
+    min-height: 100vh;
 
 }}
 
@@ -569,9 +592,19 @@ header {{
 
     padding: 18px 24px;
 
-    background: #191e24;
+    background: rgba(6, 10, 15, 0.95);
 
-    border-bottom: 1px solid #343b45;
+    border-bottom: 1px solid var(--border);
+
+    backdrop-filter: blur(12px);
+
+    -webkit-backdrop-filter: blur(12px);
+
+    position: sticky;
+
+    top: 0;
+
+    z-index: 100;
 
 }}
 
@@ -579,88 +612,376 @@ header h1 {{
 
     margin: 0;
 
-    font-size: 1.35rem;
+    font-size: 1.2rem;
+
+    font-weight: 600;
+
+    letter-spacing: 0.05em;
+
+    color: var(--cyan);
+
+    text-transform: uppercase;
 
 }}
 
 nav {{
 
-    margin-top: 12px;
+    margin-top: 10px;
 
 }}
 
 nav a {{
 
-    color: #9dcbff;
+    color: var(--muted);
 
     margin-right: 18px;
 
     text-decoration: none;
 
+    font-size: 0.8rem;
+
+    font-weight: 500;
+
+    letter-spacing: 0.08em;
+
+    text-transform: uppercase;
+
+    transition: color 0.2s;
+
 }}
+
+nav a:hover {{
+
+    color: var(--cyan);
+
+}}
+
+/* ── App Grid ────────────────────────────────── */
 
 .app-grid {{
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
 }}
 
 .app-card {{
     position: relative;
-    background: #12161c;
-    border: 1px solid #343b45;
-    border-radius: 10px;
-    padding: 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: border-color 0.25s, box-shadow 0.25s, transform 0.2s;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    cursor: default;
 }}
 
-.app-card h3 {{
-    margin: 0 0 8px 0;
-    font-size: 1rem;
+.app-card:hover {{
+    border-color: var(--border-hover);
+    box-shadow: 0 0 24px rgba(0, 212, 255, 0.1), 0 4px 24px rgba(0, 0, 0, 0.4);
+    transform: translateY(-2px);
+}}
+
+.app-card.media-card {{
+    border-color: var(--purple-border);
+}}
+
+.app-card.media-card:hover {{
+    border-color: rgba(124, 58, 237, 0.7);
+    box-shadow: 0 0 24px rgba(124, 58, 237, 0.15), 0 4px 24px rgba(0, 0, 0, 0.4);
+}}
+
+.card-top {{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}}
+
+.card-icon {{
+    font-size: 1.8rem;
+    line-height: 1;
+    flex-shrink: 0;
+}}
+
+.card-title-block {{
+    flex: 1;
+    min-width: 0;
+}}
+
+.card-name {{
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}}
+
+.card-type {{
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-top: 2px;
+}}
+
+.status-dot {{
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-left: auto;
+}}
+
+.status-dot.running {{
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse-green 2s infinite;
+}}
+
+.status-dot.stopped {{
+    background: var(--red);
+}}
+
+.status-dot.unknown {{
+    background: var(--muted);
+}}
+
+@keyframes pulse-green {{
+    0%, 100% {{ box-shadow: 0 0 4px var(--green); opacity: 1; }}
+    50% {{ box-shadow: 0 0 10px var(--green); opacity: 0.7; }}
+}}
+
+.card-status-text {{
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-left: 4px;
+}}
+
+.card-status-text.running {{ color: var(--green); }}
+.card-status-text.stopped {{ color: var(--red); }}
+.card-status-text.unknown {{ color: var(--muted); }}
+
+.status-row {{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}}
+
+.card-desc {{
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin: 0;
+    line-height: 1.5;
+    flex: 1;
 }}
 
 .app-actions {{
     display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-top: 10px;
+    gap: 8px;
+    margin-top: auto;
+    padding-top: 4px;
 }}
 
-.qr-wrap {{
-    position: relative;
-    display: inline-block;
-}}
-
-.qr-panel {{
-    display: none;
-    position: absolute;
-    top: 28px;
-    left: 0;
-    z-index: 20;
-    background: #0d1014;
-    border: 1px solid #343b45;
+.btn-launch {{
+    flex: 1;
+    background: var(--cyan);
+    color: #000;
+    border: none;
     border-radius: 8px;
-    padding: 10px;
-    width: 210px;
+    padding: 9px 14px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-decoration: none;
+    text-align: center;
+    cursor: pointer;
+    transition: background 0.2s, box-shadow 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
 }}
 
-.qr-wrap:hover .qr-panel {{
-    display: block;
+.btn-launch:hover {{
+    background: #33ddff;
+    box-shadow: 0 0 14px rgba(0, 212, 255, 0.5);
 }}
 
-.qr-panel img {{
-    width: 180px;
-    height: 180px;
-    display: block;
-    margin: 0 auto 8px auto;
-    background: white;
+.btn-launch.media {{
+    background: var(--purple);
+    color: #fff;
 }}
 
-.label-row {{
+.btn-launch.media:hover {{
+    background: #9461f7;
+    box-shadow: 0 0 14px rgba(124, 58, 237, 0.5);
+}}
+
+.btn-qr {{
+    background: transparent;
+    color: var(--cyan);
+    border: 1px solid rgba(0, 212, 255, 0.35);
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    white-space: nowrap;
+}}
+
+.btn-qr:hover {{
+    border-color: var(--cyan);
+    background: var(--cyan-dim);
+}}
+
+/* ── QR Modal ────────────────────────────────── */
+
+.qr-modal-overlay {{
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 500;
+    align-items: center;
+    justify-content: center;
+}}
+
+.qr-modal-overlay.active {{
     display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin: 8px 0;
 }}
+
+.qr-modal-box {{
+    background: rgba(10, 16, 26, 0.98);
+    border: 1px solid var(--border-hover);
+    border-radius: 16px;
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    box-shadow: 0 0 60px rgba(0, 212, 255, 0.15);
+    min-width: 340px;
+}}
+
+.qr-modal-box img {{
+    width: 300px;
+    height: 300px;
+    display: block;
+    background: white;
+    border-radius: 8px;
+}}
+
+.qr-modal-url {{
+    font-size: 0.75rem;
+    color: var(--muted);
+    text-align: center;
+    word-break: break-all;
+}}
+
+.qr-modal-close {{
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 20px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+}}
+
+.qr-modal-close:hover {{
+    color: var(--text);
+    border-color: var(--cyan);
+}}
+
+/* ── Section Headers ─────────────────────────── */
+
+.section-label {{
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    margin: 0 0 16px 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}}
+
+.section-label.cyan {{
+    color: var(--cyan);
+    border-color: rgba(0, 212, 255, 0.2);
+}}
+
+.section-label.purple {{
+    color: var(--purple);
+    border-color: var(--purple-border);
+}}
+
+.section-label::after {{
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: currentColor;
+    opacity: 0.15;
+}}
+
+/* ── Mode Selector Pills ─────────────────────── */
+
+.mode-pill-row {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}}
+
+.mode-pill {{
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 7px 18px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.2s;
+}}
+
+.mode-pill:hover {{
+    border-color: var(--cyan);
+    color: var(--cyan);
+    background: var(--cyan-dim);
+}}
+
+.mode-pill.active {{
+    border-color: var(--cyan);
+    color: var(--cyan);
+    background: rgba(0, 212, 255, 0.12);
+    box-shadow: 0 0 10px rgba(0, 212, 255, 0.2);
+    cursor: default;
+}}
+
+/* ── Control Grid ────────────────────────────── */
 
 .control-grid {{
     display: grid;
@@ -670,42 +991,83 @@ nav a {{
 
 label {{
     display: block;
-    margin: 8px 0 4px 0;
+    margin: 10px 0 4px 0;
+    font-size: 0.78rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
 }}
 
-input, select, button {{
+input, select {{
     border-radius: 8px;
-    border: 1px solid #536172;
-    background: #0d1014;
-    color: #e9eef5;
-    padding: 8px 10px;
+    border: 1px solid rgba(83, 97, 114, 0.5);
+    background: rgba(6, 10, 15, 0.8);
+    color: var(--text);
+    padding: 9px 12px;
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 0.85rem;
+    transition: border-color 0.2s;
+}}
+
+input:focus, select:focus {{
+    outline: none;
+    border-color: var(--cyan);
 }}
 
 button {{
     cursor: pointer;
+    font-family: inherit;
 }}
+
+.btn-apply {{
+    background: var(--cyan);
+    color: #000;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.2s, box-shadow 0.2s;
+    margin-top: 12px;
+}}
+
+.btn-apply:hover {{
+    background: #33ddff;
+    box-shadow: 0 0 14px rgba(0, 212, 255, 0.4);
+}}
+
+/* ── Main Layout ─────────────────────────────── */
 
 main {{
 
-    max-width: 1100px;
+    max-width: 1200px;
 
     margin: 0 auto;
 
-    padding: 24px;
+    padding: 28px 24px;
 
 }}
 
 section {{
 
-    background: #191e24;
+    background: var(--bg-section);
 
-    border: 1px solid #343b45;
+    border: 1px solid var(--border);
 
-    border-radius: 10px;
+    border-radius: 14px;
 
-    padding: 18px;
+    padding: 22px;
 
-    margin-bottom: 18px;
+    margin-bottom: 20px;
+
+    backdrop-filter: blur(6px);
+
+    -webkit-backdrop-filter: blur(6px);
 
 }}
 
@@ -721,15 +1083,39 @@ th, td {{
 
     padding: 10px;
 
-    border-bottom: 1px solid #343b45;
+    border-bottom: 1px solid var(--border);
 
     text-align: left;
+
+    font-size: 0.85rem;
+
+}}
+
+th {{
+
+    font-size: 0.68rem;
+
+    font-weight: 600;
+
+    letter-spacing: 0.12em;
+
+    text-transform: uppercase;
+
+    color: var(--muted);
 
 }}
 
 a {{
 
-    color: #9dcbff;
+    color: var(--cyan);
+
+    text-decoration: none;
+
+}}
+
+a:hover {{
+
+    text-decoration: underline;
 
 }}
 
@@ -741,13 +1127,17 @@ pre {{
 
     word-break: break-word;
 
-    background: #0d1014;
+    background: rgba(6, 10, 15, 0.8);
 
-    border: 1px solid #343b45;
+    border: 1px solid var(--border);
 
-    border-radius: 8px;
+    border-radius: 10px;
 
     padding: 14px;
+
+    font-size: 0.82rem;
+
+    color: var(--muted);
 
 }}
 
@@ -755,19 +1145,29 @@ pre {{
 
     display: inline-block;
 
-    border: 1px solid #536172;
+    border: 1px solid var(--border);
 
     border-radius: 999px;
 
-    padding: 3px 9px;
+    padding: 3px 10px;
 
     margin-right: 6px;
+
+    font-size: 0.65rem;
+
+    font-weight: 600;
+
+    letter-spacing: 0.1em;
+
+    text-transform: uppercase;
+
+    color: var(--muted);
 
 }}
 
 .muted {{
 
-    color: #a7b0bc;
+    color: var(--muted);
 
 }}
 
@@ -2357,14 +2757,64 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         vpn = config.get("vpn", {})
         privacy = config.get("privacy_relay", {})
         transfer = config.get("transfer", {})
+        MEDIA_IDS = {"radarr", "sonarr", "bazarr", "stashapp", "transfer-stack"}
+        EMOJI_MAP = {
+            "radarr": "🎬", "sonarr": "📺", "bazarr": "💬", "stashapp": "🗄️",
+            "transfer-stack": "⚡", "torrentz": "⚡", "pihole": "🛡️",
+            "3d_printer": "🖨️", "diagnostic": "🔧", "reader": "📖",
+            "tesserae": "🖼️", "pikvm": "🖥️", "pwnagotchi": "👾",
+            "ragnar": "🔍", "entertainment": "🎭",
+        }
         cards: list[str] = []
+        media_cards: list[str] = []
         for entry in entries:
-            actions: list[str] = []
+            eid = str(entry.get("id", ""))
+            emoji = EMOJI_MAP.get(eid, "📦")
+            name = html.escape(str(entry["name"]))
+            desc = html.escape(str(entry["description"]))
+            etype = html.escape(str(entry["type"]))
+            status_raw = str(entry.get("status", "unknown")).lower()
+            if status_raw in ("running", "healthy", "up", "ok"):
+                dot_cls = "running"
+                status_label = "RUNNING"
+            elif status_raw in ("stopped", "down", "error", "failed"):
+                dot_cls = "stopped"
+                status_label = "STOPPED"
+            else:
+                dot_cls = "unknown"
+                status_label = status_raw.upper() or "UNKNOWN"
+            is_media = eid in MEDIA_IDS
+            card_cls = "app-card media-card" if is_media else "app-card"
+            launch_cls = "btn-launch media" if is_media else "btn-launch"
+            actions_html = ""
             if entry.get("open_url"):
-                actions.append(f'<a href="{html.escape(str(entry["open_url"]))}" target="_blank" rel="noreferrer">Open</a>')
+                safe_url = html.escape(str(entry["open_url"]))
+                actions_html += f'<a href="{safe_url}" target="_blank" rel="noreferrer" class="{launch_cls}">&#x25BA; LAUNCH</a>'
             if entry.get("qr_url") and entry.get("mobile_url"):
-                actions.append('<div class="qr-wrap"><span class="badge">Mobile QR</span>' + f'<div class="qr-panel"><img alt="QR" src="{html.escape(str(entry["qr_url"]))}"><div class="muted">{html.escape(str(entry["mobile_url"]))}</div></div></div>')
-            cards.append('<div class="app-card">' + f'<h3>{html.escape(str(entry["name"]))}</h3>' + f'<div class="label-row"><span class="badge">{html.escape(str(entry["type"]))}</span><span class="badge">{html.escape(str(entry["status"]))}</span></div>' + f'<p class="muted">{html.escape(str(entry["description"]))}</p>' + f'<div class="app-actions">{" ".join(actions)}</div>' + '</div>')
+                safe_qr = html.escape(str(entry["qr_url"]))
+                safe_mob = html.escape(str(entry["mobile_url"]))
+                actions_html += f'<button class="btn-qr" onclick="openQR(\'{safe_qr}\',\'{safe_mob}\')" type="button">QR</button>'
+            card_html = (
+                f'<div class="{card_cls}">'
+                f'<div class="card-top">'
+                f'<span class="card-icon">{emoji}</span>'
+                f'<div class="card-title-block">'
+                f'<div class="card-name">{name}</div>'
+                f'<div class="card-type">{etype}</div>'
+                f'</div>'
+                f'<span class="status-dot {dot_cls}" title="{status_label}"></span>'
+                f'</div>'
+                f'<div class="status-row">'
+                f'<span class="card-status-text {dot_cls}">{status_label}</span>'
+                f'</div>'
+                f'<p class="card-desc">{desc}</p>'
+                f'<div class="app-actions">{actions_html}</div>'
+                f'</div>'
+            )
+            if is_media:
+                media_cards.append(card_html)
+            else:
+                cards.append(card_html)
 
         provider = str(vpn.get("provider", "none"))
         privacy_mode = str(privacy.get("mode", "off"))
@@ -2374,19 +2824,35 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         require_vpn_checked = "checked" if transfer.get("require_vpn", True) else ""
         auto_use_usb_checked = "checked" if transfer.get("auto_use_usb", False) else ""
 
-        body = f"""
+        media_grid = "".join(media_cards)
+        apps_grid = "".join(cards)
+        media_section = f"""
 <section>
-<h2>Applications</h2>
-<p class="muted">Hover Mobile QR for a scan target. Transfer Stack opens through Rocky's local proxy path.</p>
-<div class="app-grid">
-{"".join(cards)}
-</div>
+<div class="section-label purple">🎭 MEDIA CENTER</div>
+<div class="app-grid">{media_grid}</div>
 </section>
+""" if media_cards else ""
+
+        body = f"""
+<!-- QR Modal -->
+<div class="qr-modal-overlay" id="qr-modal" onclick="if(event.target===this)closeQR()">
+  <div class="qr-modal-box">
+    <img id="qr-modal-img" alt="Mobile QR Code" src="">
+    <div class="qr-modal-url" id="qr-modal-url"></div>
+    <button class="qr-modal-close" onclick="closeQR()" type="button">✕ CLOSE</button>
+  </div>
+</div>
+
 <section>
-<h2>Workflow &amp; Mode Controls</h2>
+<div class="section-label cyan">⬡ APPLICATIONS</div>
+<div class="app-grid">{apps_grid}</div>
+</section>
+{media_section}
+<section>
+<div class="section-label cyan">⚙ WORKFLOW &amp; MODE CONTROLS</div>
 <div class="control-grid">
   <section>
-    <h3>Network Mode</h3>
+    <div class="section-label cyan" style="font-size:0.6rem;margin-bottom:12px;">NETWORK MODE</div>
     <form id="network-form">
       <label for="vpn-provider">VPN provider</label>
       <select id="vpn-provider" name="provider">
@@ -2399,42 +2865,48 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         <option value="off" {"selected" if privacy_mode == "off" else ""}>off</option>
         <option value="tor_socks5" {"selected" if privacy_mode == "tor_socks5" else ""}>tor_socks5</option>
       </select>
-      <label><input type="checkbox" id="allow-lan" {allow_lan_checked}> allow LAN</label>
-      <label><input type="checkbox" id="kill-switch" {kill_switch_checked}> kill switch</label>
-      <p><button type="submit">Apply network settings</button></p>
+      <label style="text-transform:none;letter-spacing:0;font-size:0.85rem;margin-top:12px;display:flex;align-items:center;gap:8px;"><input type="checkbox" id="allow-lan" {allow_lan_checked} style="width:auto;"> Allow LAN</label>
+      <label style="text-transform:none;letter-spacing:0;font-size:0.85rem;display:flex;align-items:center;gap:8px;"><input type="checkbox" id="kill-switch" {kill_switch_checked} style="width:auto;"> Kill Switch</label>
+      <p><button type="submit" class="btn-apply">Apply Network</button></p>
     </form>
   </section>
   <section>
-    <h3>Transfer Mode</h3>
+    <div class="section-label cyan" style="font-size:0.6rem;margin-bottom:12px;">TRANSFER MODE</div>
     <form id="transfer-form">
       <label for="transfer-engine">Transfer engine</label>
       <select id="transfer-engine" name="engine">
         <option value="qbittorrent-nox" {"selected" if engine == "qbittorrent-nox" else ""}>qbittorrent-nox</option>
         <option value="transmission" {"selected" if engine == "transmission" else ""}>transmission</option>
       </select>
-      <label><input type="checkbox" id="require-vpn" {require_vpn_checked}> require VPN</label>
-      <label><input type="checkbox" id="auto-use-usb" {auto_use_usb_checked}> auto-use USB</label>
-      <p><button type="submit">Apply transfer settings</button></p>
+      <label style="text-transform:none;letter-spacing:0;font-size:0.85rem;margin-top:12px;display:flex;align-items:center;gap:8px;"><input type="checkbox" id="require-vpn" {require_vpn_checked} style="width:auto;"> Require VPN</label>
+      <label style="text-transform:none;letter-spacing:0;font-size:0.85rem;display:flex;align-items:center;gap:8px;"><input type="checkbox" id="auto-use-usb" {auto_use_usb_checked} style="width:auto;"> Auto-Use USB</label>
+      <p><button type="submit" class="btn-apply">Apply Transfer</button></p>
     </form>
   </section>
   <section>
-    <h3>Rocky Mode</h3>
-    <p class="muted" id="mode-current-label">Loading...</p>
-    <div id="mode-cards" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;"></div>
-    <pre id="mode-feedback" class="muted" style="margin-top:10px;"></pre>
-  </section>
-  <section>
-    <h3>Rocky Mode</h3>
-    <p class="muted" id="mode-current-label">Loading...</p>
-    <div id="mode-cards" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;"></div>
-    <pre id="mode-feedback" class="muted" style="margin-top:10px;"></pre>
+    <div class="section-label cyan" style="font-size:0.6rem;margin-bottom:4px;">ROCKY MODE</div>
+    <p class="muted" id="mode-current-label" style="font-size:0.8rem;margin:8px 0;">Loading...</p>
+    <div id="mode-cards" class="mode-pill-row"></div>
+    <pre id="mode-feedback" class="muted" style="margin-top:12px;font-size:0.75rem;"></pre>
   </section>
 </div>
-<pre id="apps-feedback" class="muted">Ready.</pre>
+<pre id="apps-feedback" class="muted" style="font-size:0.75rem;margin-top:16px;">Ready.</pre>
 </section>
 <script>
 const csrfToken = document.querySelector('meta[name="rocky-csrf-token"]').content;
 const feedback = document.getElementById('apps-feedback');
+
+function openQR(src, url) {{
+  document.getElementById('qr-modal-img').src = src;
+  document.getElementById('qr-modal-url').textContent = url;
+  document.getElementById('qr-modal').classList.add('active');
+}}
+function closeQR() {{
+  document.getElementById('qr-modal').classList.remove('active');
+  document.getElementById('qr-modal-img').src = '';
+}}
+document.addEventListener('keydown', (e) => {{ if (e.key === 'Escape') closeQR(); }});
+
 async function submitJson(path, payload) {{
   const response = await fetch(path, {{method: 'POST', headers: {{'Content-Type': 'application/json', 'X-Rocky-CSRF': csrfToken}}, body: JSON.stringify(payload)}});
   feedback.textContent = await response.text();
@@ -2453,38 +2925,35 @@ document.getElementById('transfer-form').addEventListener('submit', async (event
   const csrf = document.querySelector('meta[name="rocky-csrf-token"]').content;
   const fb = document.getElementById('mode-feedback');
   const lbl = document.getElementById('mode-current-label');
-  const cards = document.getElementById('mode-cards');
-  const COLORS = {{blue:'#3b82f6',red:'#ef4444',green:'#22c55e',yellow:'#eab308',gray:'#6b7280'}};
+  const pillRow = document.getElementById('mode-cards');
+  const COLORS = {{blue:'#3b82f6',red:'#ef4444',green:'#22c55e',yellow:'#eab308',gray:'#6b7280',purple:'#7c3aed'}};
   async function load() {{
     try {{
       const d = await (await fetch('/api/mode/config')).json();
       const cur = (d.current_mode || {{}}).selected_mode_id || 'safe';
       const live = ((d.published_mode || {{}}).live || {{}}).mode_id || cur;
-      lbl.textContent = 'Active: ' + live + (live !== cur ? ' (switching to ' + cur + ')' : '');
-      cards.innerHTML = '';
+      lbl.textContent = 'Active: ' + live + (live !== cur ? ' → ' + cur : '');
+      pillRow.innerHTML = '';
       for (const m of (d.modes || [])) {{
-        const c = COLORS[((m.ui || {{}}).color_hint)] || COLORS.gray;
         const active = m.mode_id === cur;
         const btn = document.createElement('button');
-        btn.textContent = m.label || m.mode_id;
+        btn.textContent = (m.label || m.mode_id).toUpperCase();
         btn.title = m.description || '';
-        btn.style.cssText = 'border:2px solid ' + c + ';background:' + (active ? c : 'transparent') + ';color:' + (active ? '#000' : '#e9eef5') + ';font-weight:' + (active ? 'bold' : 'normal') + ';padding:8px 16px;border-radius:8px;cursor:' + (active ? 'default' : 'pointer') + ';margin:2px';
+        btn.className = 'mode-pill' + (active ? ' active' : '');
         if (!active) btn.addEventListener('click', async () => {{
-          fb.textContent = 'Switching to ' + m.label + '...';
+          fb.textContent = 'Switching to ' + (m.label || m.mode_id) + '...';
           const r = await fetch('/api/mode/select', {{method:'POST',headers:{{'Content-Type':'application/json','X-Rocky-CSRF':csrf}},body:JSON.stringify({{selected_mode_id:m.mode_id,reason:'browser_mode_selector'}})}});
           const j = await r.json();
-          fb.textContent = j.ok ? 'Mode set to ' + m.mode_id : JSON.stringify(j);
+          fb.textContent = j.ok ? '✓ Mode set to ' + m.mode_id : JSON.stringify(j);
           if (j.ok) setTimeout(load, 2000);
         }});
-        cards.appendChild(btn);
+        pillRow.appendChild(btn);
       }}
     }} catch(e) {{ lbl.textContent = 'Error: ' + e; }}
   }}
   load();
   setInterval(load, 8000);
 }})();
-
-
 </script>
 """
 
