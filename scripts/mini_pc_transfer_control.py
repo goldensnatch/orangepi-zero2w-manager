@@ -6,6 +6,7 @@ import base64
 import html
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -49,9 +50,20 @@ class Job:
     verification_stderr: str = ""
     deleted: bool = False
     deleted_paths: list[str] = field(default_factory=list)
+    total_bytes: int = 0
+    transferred_bytes: int = 0
+    skipped_bytes: int = 0
+    current: str = ""
+    logs: list[str] = field(default_factory=list)
 
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
+
+
+def job_log(job: Job, message: str) -> None:
+    stamp = time.strftime("%H:%M:%S")
+    job.logs.append(f"{stamp} {message}")
+    job.logs = job.logs[-200:]
 
 
 def run(cmd: list[str], *, timeout: int = 15) -> subprocess.CompletedProcess[str]:
@@ -167,8 +179,9 @@ def ps_single_quote(value: str) -> str:
 
 
 def powershell_args(script: str) -> list[str]:
-    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-    return ["powershell", "-NoProfile", "-EncodedCommand", encoded]
+    wrapped = "$ProgressPreference = 'SilentlyContinue'; " + script
+    encoded = base64.b64encode(wrapped.encode("utf-16le")).decode("ascii")
+    return ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
 
 
 def mini_pc_ssh_base() -> list[str]:
@@ -195,7 +208,10 @@ def remote_size_bytes(remote_path: str) -> int:
     proc = subprocess.run([*mini_pc_ssh_base(), *powershell_args(script)], capture_output=True, text=True, check=False, timeout=600)
     if proc.returncode != 0:
         raise ValueError((proc.stderr or proc.stdout or f"remote path not found: {remote_path}").strip())
-    return int((proc.stdout or "0").strip().splitlines()[-1])
+    numbers = re.findall(r"(?m)^\s*(\d+)\s*$", proc.stdout or "")
+    if not numbers:
+        raise ValueError((proc.stderr or proc.stdout or f"remote size unavailable: {remote_path}").strip())
+    return int(numbers[-1])
 
 
 def remote_exports_status() -> dict[str, object]:
@@ -333,6 +349,81 @@ def make_transfer_command(paths: list[str]) -> list[str]:
     return ["scp", "-r", "-p", "-i", key, "-P", port, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", *sources, f"{user}@{host}:{dest}"]
 
 
+def iter_source_files(paths: list[str]) -> list[tuple[Path, str, str]]:
+    rows: list[tuple[Path, str, str]] = []
+    for raw in paths:
+        source = resolve_source(raw)
+        if source.is_dir():
+            for child in sorted(source.rglob("*"), key=lambda p: p.as_posix().lower()):
+                if child.is_file():
+                    rel = child.relative_to(source).as_posix()
+                    rows.append((child, source.name, rel))
+        elif source.is_file():
+            rows.append((source, "", source.name))
+    return rows
+
+
+def remote_file_size_or_none(remote_file: str) -> int | None:
+    script = f"$p={ps_single_quote(remote_file)}; if (Test-Path -LiteralPath $p) {{ [Int64](Get-Item -LiteralPath $p -Force).Length }} else {{ 'MISSING' }}"
+    proc = subprocess.run([*mini_pc_ssh_base(), *powershell_args(script)], capture_output=True, text=True, check=False, timeout=60)
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout or ""
+    if "MISSING" in out:
+        return None
+    numbers = re.findall(r"(?m)^\s*(\d+)\s*$", out)
+    if numbers:
+        return int(numbers[-1])
+    return None
+
+
+def ensure_remote_dir(remote_dir: str) -> None:
+    script = f"New-Item -ItemType Directory -Force -Path {ps_single_quote(remote_dir)} | Out-Null"
+    proc = subprocess.run([*mini_pc_ssh_base(), *powershell_args(script)], capture_output=True, text=True, check=False, timeout=120)
+    if proc.returncode != 0:
+        raise ValueError((proc.stderr or proc.stdout or f"failed to create remote dir {remote_dir}").strip())
+
+
+def transfer_with_resume(job: Job) -> None:
+    cfg = load_config()
+    dest = str(cfg.get("destination") or "").strip()
+    files = iter_source_files(job.paths)
+    job.total_bytes = sum(path.stat().st_size for path, _, _ in files)
+    job_log(job, f"scanning {len(files)} files, {human_size(job.total_bytes)} total")
+    for path, top_folder, rel in files:
+        size = path.stat().st_size
+        rel_win = rel.replace("/", "\\")
+        remote_dir = windows_join_path(dest, top_folder) if top_folder else dest
+        if "/" in rel:
+            parent = str(Path(rel).parent).replace("/", "\\")
+            remote_dir = windows_join_path(remote_dir, parent)
+        remote_file = windows_join_path(remote_dir, path.name)
+        existing = remote_file_size_or_none(remote_file)
+        if existing == size:
+            job.skipped_bytes += size
+            job.transferred_bytes += size
+            job_log(job, f"skip verified existing {top_folder + '/' if top_folder else ''}{rel}")
+            continue
+        job.current = f"{top_folder + '/' if top_folder else ''}{rel}"
+        ensure_remote_dir(remote_dir)
+        target = windows_dest_for_scp(remote_dir).rstrip("/") + "/"
+        cmd = ["scp", "-p", "-i", str(load_config().get("ssh_key") or DEFAULT_KEY), "-P", str(load_config().get("port") or 22), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", str(path), f"{load_config().get('user')}@{load_config().get('host')}:{target}"]
+        job_log(job, f"copy {job.current} ({human_size(size)})")
+        before = time.time()
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=None)
+        if proc.returncode != 0:
+            job.stdout += (proc.stdout or "")[-4000:]
+            job.stderr += (proc.stderr or "")[-4000:]
+            raise ValueError((proc.stderr or proc.stdout or f"scp failed for {job.current}").strip())
+        after_size = remote_file_size_or_none(remote_file)
+        if after_size != size:
+            raise ValueError(f"remote size mismatch after copy for {job.current}: local={size} remote={after_size}")
+        job.transferred_bytes += size
+        elapsed = max(0.001, time.time() - before)
+        job_log(job, f"done {job.current} at {human_size(int(size/elapsed))}/s")
+    job.current = ""
+
+
 def verify_remote_transfer(job: Job) -> None:
     cfg = load_config()
     dest = str(cfg.get("destination") or "").strip()
@@ -357,19 +448,16 @@ def verify_remote_transfer(job: Job) -> None:
 
 def run_job(job: Job) -> None:
     try:
-        proc = subprocess.run(job.command, capture_output=True, text=True, check=False, timeout=None)
-        job.returncode = proc.returncode
-        job.stdout = (proc.stdout or "")[-40000:]
-        job.stderr = (proc.stderr or "")[-40000:]
-        if proc.returncode == 0:
-            verify_remote_transfer(job)
-            job.status = "completed" if job.verified else "verify_failed"
-        else:
-            job.status = "failed"
+        transfer_with_resume(job)
+        job.returncode = 0
+        verify_remote_transfer(job)
+        job.status = "completed" if job.verified else "verify_failed"
     except Exception as exc:
         job.status = "failed"
-        job.stderr = str(exc)
+        job.stderr = ((job.stderr + "\n") if job.stderr else "") + str(exc)
+        job_log(job, f"ERROR {exc}")
     finally:
+        job.current = ""
         job.completed_at = time.time()
 
 
@@ -402,7 +490,7 @@ def start_transfer(payload: dict[str, object]) -> Job:
     if not isinstance(raw_paths, list) or not raw_paths:
         raise ValueError("paths is required")
     paths = [str(p) for p in raw_paths]
-    cmd = make_transfer_command(paths)
+    cmd = ["internal", "scp-resume-missing-or-mismatched"]
     job = Job(id=secrets.token_hex(8), paths=paths, command=cmd)
     with JOBS_LOCK:
         JOBS[job.id] = job
@@ -431,6 +519,15 @@ def job_payload(job: Job) -> dict[str, object]:
         "verification_stderr": job.verification_stderr,
         "deleted": job.deleted,
         "deleted_paths": job.deleted_paths,
+        "total_bytes": job.total_bytes,
+        "transferred_bytes": job.transferred_bytes,
+        "skipped_bytes": job.skipped_bytes,
+        "total_human": human_size(job.total_bytes),
+        "transferred_human": human_size(job.transferred_bytes),
+        "skipped_human": human_size(job.skipped_bytes),
+        "percent": round((job.transferred_bytes / job.total_bytes * 100.0), 2) if job.total_bytes else 0,
+        "current": job.current,
+        "logs": job.logs,
     }
 
 
