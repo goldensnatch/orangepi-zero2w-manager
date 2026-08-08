@@ -10,8 +10,10 @@ import os
 import shutil
 import subprocess
 import time
+import threading
+import uuid
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,6 +22,10 @@ from typing import Any
 SWITCH_USB_ID = "11ec:a7e0"
 SWITCH_USB_LABEL = "Nyx USB Disk UMS"
 DEFAULT_ROOT = "/mnt/rocky-transfer/complete"
+MTP_MOUNT_ROOT = Path(os.environ.get("SWITCH_MTP_MOUNT", "/home/orangepi/switch-mtp"))
+COPY_CHUNK_SIZE = 4 * 1024 * 1024
+TRANSFER_JOBS: dict[str, "TransferJob"] = {}
+TRANSFER_JOBS_LOCK = threading.Lock()
 
 
 def run_cmd(command: list[str], *, timeout: int = 8) -> subprocess.CompletedProcess[str]:
@@ -80,6 +86,56 @@ class SwitchMount:
     usage: dict[str, Any] | None
 
 
+@dataclass
+class TransferJob:
+    id: str
+    status: str = "running"
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    started_at: float = field(default_factory=time.time)
+    completed_at: float | None = None
+    total_bytes: int = 0
+    copied_bytes: int = 0
+    current: str = ""
+    logs: list[str] = field(default_factory=list)
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+    def log(self, message: str) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        self.logs.append(f"{stamp} {message}")
+        self.logs = self.logs[-200:]
+        self.updated_at = time.time()
+
+    def add_bytes(self, count: int) -> None:
+        self.copied_bytes += count
+        self.updated_at = time.time()
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.time() if self.status == "running" else (self.completed_at or time.time())
+        elapsed = max(0.001, now - self.started_at)
+        speed = self.copied_bytes / elapsed
+        percent = (self.copied_bytes / self.total_bytes * 100.0) if self.total_bytes else 0.0
+        return {
+            "id": self.id,
+            "status": self.status,
+            "created_at": int(self.created_at),
+            "updated_at": int(self.updated_at),
+            "completed_at": int(self.completed_at) if self.completed_at else None,
+            "total_bytes": self.total_bytes,
+            "copied_bytes": self.copied_bytes,
+            "total_human": human_size(self.total_bytes),
+            "copied_human": human_size(self.copied_bytes),
+            "percent": round(percent, 2),
+            "bytes_per_second": int(speed),
+            "speed_human": human_size(int(speed)) + "/s",
+            "current": self.current,
+            "logs": self.logs,
+            "result": self.result,
+            "error": self.error,
+        }
+
+
 class SwitchTransferState:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
@@ -107,11 +163,47 @@ class SwitchTransferState:
         matches = []
         for dev in self.usb_devices():
             text = (dev.get("id", "") + " " + dev.get("description", "")).lower()
-            if "057e:3000" in text or "057e:201d" in text or "nintendo" in text or "switch" in text:
+            if "057e:3000" in text or "057e:201d" in text or "nintendo" in text or "switch" in text or "dbi" in text:
                 matches.append(dev)
         connected = bool(matches)
-        mode = "custom_usb_or_debug" if any(d.get("id") in {"057e:3000", "057e:201d"} for d in matches) else "unknown" if connected else "none"
-        return {"connected": connected, "mode": mode, "devices": matches, "mtp_visible": connected and bool(shutil.which("mtp-detect")) and "057e:3000" not in " ".join(d.get("id", "") for d in matches)}
+        mode = "dbi_or_installer" if any(d.get("id") == "057e:201d" or "dbi" in d.get("description", "").lower() for d in matches) else "custom_usb_or_debug" if any(d.get("id") in {"057e:3000", "057e:2000"} for d in matches) else "unknown" if connected else "none"
+        return {"connected": connected, "mode": mode, "devices": matches, "mtp_visible": connected and bool(shutil.which("mtp-detect")) and not any(d.get("id") == "057e:3000" for d in matches)}
+
+    def mtp_status(self) -> dict[str, Any]:
+        tools = {name: shutil.which(name) for name in ["mtp-detect", "mtp-files", "mtp-sendfile", "jmtpfs", "fusermount", "fusermount3"]}
+        mount_root = MTP_MOUNT_ROOT.expanduser().resolve()
+        mounted = False
+        try:
+            mountinfo = Path("/proc/self/mountinfo").read_text(errors="ignore")
+            mounted = str(mount_root) in mountinfo
+        except OSError:
+            mounted = mount_root.is_mount()
+        raw_devices = False
+        detect_tail = ""
+        if tools.get("mtp-detect"):
+            try:
+                result = run_cmd([tools["mtp-detect"]], timeout=10)
+                combined = (result.stdout + result.stderr).strip()
+                raw_devices = "No raw devices found" not in combined and ("Device" in combined or "Manufacturer" in combined or "Model" in combined)
+                detect_tail = "\n".join(combined.splitlines()[:40])
+            except Exception as exc:
+                detect_tail = str(exc)
+        return {
+            "tools": tools,
+            "mount_path": str(mount_root),
+            "mounted": mounted,
+            "writable": mounted and os.access(mount_root, os.W_OK),
+            "raw_device_visible": raw_devices,
+            "detect": detect_tail,
+            "cyberfoil_usb": self.cyberfoil_usb(),
+        }
+
+    def mtp_files(self, rel: Path = Path(".")) -> tuple[Path, list[dict[str, Any]]]:
+        status = self.mtp_status()
+        if not status.get("mounted"):
+            raise ValueError("MTP is not mounted; start DBI/CyberFoil MTP mode, then mount MTP")
+        root = Path(str(status["mount_path"])).resolve()
+        return root, self.list_directory(root, rel)
 
     def switch_mount(self) -> SwitchMount:
         usb = self.usb_line()
@@ -247,6 +339,7 @@ class SwitchTransferState:
                 "true_poweroff_available": shutil.which("udisksctl") is not None,
                 "mtp_tools": all(shutil.which(c) is not None for c in ["mtp-detect", "jmtpfs", "fusermount"]),
             },
+            "mtp": self.mtp_status(),
             "root": str(self.root),
             "root_exists": self.root.exists(),
             "root_is_dir": self.root.is_dir(),
@@ -260,7 +353,7 @@ class SwitchTransferState:
 
 
 
-def merge_copy(src: Path, dest: Path, *, replace: bool) -> dict[str, Any]:
+def merge_copy(src: Path, dest: Path, *, replace: bool, job: TransferJob | None = None) -> dict[str, Any]:
     copied = 0
     skipped = 0
     replaced = 0
@@ -268,18 +361,39 @@ def merge_copy(src: Path, dest: Path, *, replace: bool) -> dict[str, Any]:
 
     def copy_file(source: Path, target: Path) -> None:
         nonlocal copied, skipped, replaced, bytes_copied
+        size = source.stat().st_size
         if target.exists():
             if not replace:
                 skipped += 1
+                if job:
+                    job.log(f"skip existing {target}")
                 return
             replaced += 1
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        partial = target.with_name(f".{target.name}.partial")
+        if partial.exists():
+            partial.unlink()
+        if job:
+            job.current = str(target)
+            job.log(f"copy {source} -> {target} ({human_size(size)})")
+        with source.open("rb") as src_fh, partial.open("wb") as dst_fh:
+            while True:
+                chunk = src_fh.read(COPY_CHUNK_SIZE)
+                if not chunk:
+                    break
+                dst_fh.write(chunk)
+                bytes_copied += len(chunk)
+                if job:
+                    job.add_bytes(len(chunk))
+            dst_fh.flush()
+            os.fsync(dst_fh.fileno())
+        if target.exists() and replace:
+            target.unlink()
+        os.replace(partial, target)
+        shutil.copystat(source, target, follow_symlinks=True)
         copied += 1
-        try:
-            bytes_copied += source.stat().st_size
-        except OSError:
-            pass
+        if job:
+            job.log(f"done {target}")
 
     if src.is_dir():
         dest.mkdir(parents=True, exist_ok=True)
@@ -340,8 +454,22 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
                 self.send_json({"root": str(root), "path": rel.as_posix(), "files": files})
             except Exception as exc:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+        elif path == "/api/mtp/status":
+            self.send_json(self.state.mtp_status())
+        elif path == "/api/mtp/files":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                rel = safe_rel_path(query.get("path", [""])[0])
+                root, files = self.state.mtp_files(rel)
+                self.send_json({"root": str(root), "path": rel.as_posix(), "files": files})
+            except Exception as exc:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
         elif path == "/api/common-targets":
             self.handle_common_targets()
+        elif path == "/api/jobs":
+            self.handle_jobs()
+        elif path.startswith("/api/jobs/"):
+            self.handle_jobs(path.rsplit("/", 1)[-1])
         elif path.startswith("/file/"):
             self.send_file(path.removeprefix("/file/"))
         else:
@@ -357,6 +485,10 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             self.handle_delete()
         elif path == "/api/mount":
             self.handle_mount()
+        elif path == "/api/mtp/mount":
+            self.handle_mtp_mount()
+        elif path == "/api/mtp/unmount":
+            self.handle_mtp_unmount()
         elif path == "/api/eject":
             self.handle_eject()
         else:
@@ -403,7 +535,7 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             raise ValueError("destination outside selected Switch target")
         return dest
 
-    def copy_source_to_switch(self, src: Path, *, target: str = "", replace: bool = False) -> dict[str, Any]:
+    def copy_source_to_switch(self, src: Path, *, target: str = "", replace: bool = False, job: TransferJob | None = None) -> dict[str, Any]:
         kind = "directory" if src.is_dir() else "file"
         target_root = self.resolve_switch_target_root(target)
         if src.is_dir() and target_root.name == src.name:
@@ -415,7 +547,7 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             if target_root not in [dest, *dest.parents]:
                 raise ValueError("destination outside selected Switch target")
         size = directory_size(src) if src.is_dir() else src.stat().st_size
-        result = merge_copy(src, dest, replace=replace)
+        result = merge_copy(src, dest, replace=replace, job=job)
         return {"name": src.name, "kind": kind, "destination": str(dest), "size": size, "size_human": human_size(size), **result}
 
     def handle_copy(self) -> None:
@@ -426,15 +558,49 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
                 raw_paths = [payload.get("path")]
             if not isinstance(raw_paths, list) or not raw_paths:
                 raise ValueError("paths must be a non-empty list")
+            sources = [self.resolve_source(str(raw or ""), allow_directory=True) for raw in raw_paths]
             target = str(payload.get("target") or "")
             replace = bool(payload.get("replace"))
-            copied: list[dict[str, Any]] = []
-            for raw in raw_paths:
-                src = self.resolve_source(str(raw or ""), allow_directory=True)
-                copied.append(self.copy_source_to_switch(src, target=target, replace=replace))
-            self.send_json({"ok": True, "target": target or "/", "replace": replace, "copied": copied, "count": len(copied)})
+            job = TransferJob(id=uuid.uuid4().hex[:12], total_bytes=sum(directory_size(src) if src.is_dir() else src.stat().st_size for src in sources))
+            job.log(f"queued {len(sources)} item(s) to /{target} replace={replace}")
+            with TRANSFER_JOBS_LOCK:
+                TRANSFER_JOBS[job.id] = job
+            thread = threading.Thread(target=self.run_copy_job, args=(job, sources, target, replace), daemon=True)
+            thread.start()
+            self.send_json({"ok": True, "job": job.snapshot()}, HTTPStatus.ACCEPTED)
         except Exception as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def run_copy_job(self, job: TransferJob, sources: list[Path], target: str, replace: bool) -> None:
+        try:
+            copied: list[dict[str, Any]] = []
+            for src in sources:
+                copied.append(self.copy_source_to_switch(src, target=target, replace=replace, job=job))
+            run_cmd([shutil.which("sync") or "/usr/bin/sync"], timeout=120)
+            job.result = {"ok": True, "target": target or "/", "replace": replace, "copied": copied, "count": len(copied)}
+            job.status = "completed"
+            job.log("transfer complete and synced")
+        except Exception as exc:
+            job.status = "failed"
+            job.error = str(exc)
+            job.log(f"ERROR {exc}")
+        finally:
+            job.completed_at = time.time()
+            job.updated_at = job.completed_at
+            job.current = ""
+
+    def handle_jobs(self, job_id: str | None = None) -> None:
+        with TRANSFER_JOBS_LOCK:
+            if job_id:
+                job = TRANSFER_JOBS.get(job_id)
+                if not job:
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "job not found")
+                    return
+                self.send_json(job.snapshot())
+                return
+            jobs = [job.snapshot() for job in TRANSFER_JOBS.values()]
+        jobs.sort(key=lambda item: item.get("created_at", 0), reverse=True)
+        self.send_json({"jobs": jobs[:20]})
 
     def handle_upload(self) -> None:
         try:
@@ -518,6 +684,40 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
                 "stderr": result.stderr.strip(),
                 "switch": mounted.__dict__,
             }, HTTPStatus.OK if result.returncode == 0 else HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_mtp_mount(self) -> None:
+        try:
+            status = self.state.mtp_status()
+            if status.get("mounted"):
+                self.send_json({"ok": True, "message": "MTP already mounted", "mtp": status})
+                return
+            if not status["tools"].get("jmtpfs"):
+                raise ValueError("jmtpfs is not installed")
+            if not status.get("raw_device_visible"):
+                raise ValueError("No MTP raw device is visible. Start DBI/CyberFoil MTP mode on the Switch; Nyx UMS is mass storage, not MTP.")
+            mount_root = Path(str(status["mount_path"]))
+            mount_root.mkdir(parents=True, exist_ok=True)
+            result = run_cmd([status["tools"]["jmtpfs"], str(mount_root)], timeout=20)
+            after = self.state.mtp_status()
+            self.send_json({"ok": bool(after.get("mounted")), "command": f"jmtpfs {mount_root}", "returncode": result.returncode, "stdout": result.stdout.strip(), "stderr": result.stderr.strip(), "mtp": after}, HTTPStatus.OK if after.get("mounted") else HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_mtp_unmount(self) -> None:
+        try:
+            status = self.state.mtp_status()
+            mount_root = Path(str(status["mount_path"]))
+            tool = status["tools"].get("fusermount3") or status["tools"].get("fusermount")
+            if not status.get("mounted"):
+                self.send_json({"ok": True, "message": "MTP is not mounted", "mtp": status})
+                return
+            if not tool:
+                raise ValueError("fusermount/fusermount3 is not installed")
+            result = run_cmd([tool, "-u", str(mount_root)], timeout=20)
+            after = self.state.mtp_status()
+            self.send_json({"ok": not bool(after.get("mounted")), "command": f"{tool} -u {mount_root}", "returncode": result.returncode, "stdout": result.stdout.strip(), "stderr": result.stderr.strip(), "mtp": after}, HTTPStatus.OK if not after.get("mounted") else HTTPStatus.BAD_REQUEST)
         except Exception as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
 
@@ -605,9 +805,10 @@ HTML = r'''<!doctype html>
 <div class="notice" id="notice"></div>
 <section class="card"><div class="label">Switch Copy Target</div><div class="toolbar"><select id="target-select"></select><input id="target-input" placeholder="Custom target folder, e.g. switch" /><label class="muted"><input type="checkbox" id="replace-existing" /> Replace existing files</label><button class="btn" onclick="applyTargetInput()">Use Target</button></div><div class="muted" id="target-note">Target: /</div></section>
 <section class="card upload" id="upload-card"><div class="label">Upload to Switch</div><form id="upload-form"><input name="file" type="file" required /> <button class="btn" type="submit">Upload</button></form></section>
-<section class="toolbar"><button class="btn" onclick="loadAll()">Refresh</button><button class="btn" id="mount-btn" onclick="mountSwitch()">Mount Switch UMS</button><button class="btn" id="copy-selected-btn" onclick="copySelected()">Copy Selected to Switch</button><button class="btn" onclick="clearSelection()">Clear Selection</button><button class="btn btn-danger" id="eject-btn" onclick="ejectSwitch()">Sync + Eject Switch</button><a class="btn" href="/__health">Health JSON</a><a class="btn" href="/api/status">Status JSON</a></section>
+<section class="toolbar"><button class="btn" onclick="loadAll()">Refresh</button><button class="btn" id="mount-btn" onclick="mountSwitch()">Mount Switch UMS</button><button class="btn" onclick="mountMtp()">Mount MTP</button><button class="btn" onclick="unmountMtp()">Unmount MTP</button><button class="btn" id="copy-selected-btn" onclick="copySelected()">Copy Selected to Switch</button><button class="btn" onclick="clearSelection()">Clear Selection</button><button class="btn btn-danger" id="eject-btn" onclick="ejectSwitch()">Sync + Eject Switch</button><a class="btn" href="/__health">Health JSON</a><a class="btn" href="/api/status">Status JSON</a></section>
 <section class="browser card"><div class="label">Completed files</div><div class="crumb" id="crumb">/</div><div class="file-grid" id="files"></div></section>
 <section class="browser card"><div class="label">Switch SD Card</div><div class="muted">Read-only browser for the mounted UMS SD card.</div><div class="crumb" id="switch-crumb">/</div><div class="file-grid" id="switch-files"></div></section>
+<section class="browser card"><div class="label">MTP / Installer Storage</div><div class="muted" id="mtp-note">Start DBI/CyberFoil MTP mode, then click Mount MTP.</div><div class="file-grid" id="mtp-files"></div></section>
 <pre id="log"></pre>
 </main><script>
 let currentPath=''; let switchPath=''; let copyTarget=''; let statusCache=null; const selected=new Set();
@@ -616,7 +817,7 @@ function esc(s){return String(s ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':
 async function j(url, opts){const r=await fetch(url, opts); const data=await r.json(); if(!r.ok) throw new Error(data.error || r.statusText); return data}
 function log(x){document.getElementById('log').textContent = typeof x === 'string' ? x : JSON.stringify(x,null,2)}
 function card(label,value,cls=''){return `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${esc(value)}</div></div>`}
-function renderStatus(s){statusCache=s; const sw=s.switch||{}; const connected=sw.detected; const mounted=!!sw.mount_path; const writable=!!sw.writable; document.getElementById('service-pill').textContent=s.healthy?'service healthy':'service degraded'; document.getElementById('status-grid').innerHTML=[card('Transfer root',s.root),card('Switch UMS',connected?'detected':'not detected',connected?'ok':'bad'),card('CyberFoil USB',(s.cyberfoil_usb&&s.cyberfoil_usb.connected)?s.cyberfoil_usb.mode:'not detected',(s.cyberfoil_usb&&s.cyberfoil_usb.connected)?'ok':'warn'),card('Mount state',mounted?sw.mount_path:'not mounted',mounted?'ok':'warn'),card('Writable',writable?'yes':'no',writable?'ok':'warn'),card('Switch size',sw.size || (sw.usage&&sw.usage.total_human)),card('Switch free',sw.usage&&sw.usage.free_human)].join(''); document.getElementById('upload-card').classList.toggle('active', writable); document.getElementById('eject-btn').disabled=!connected; document.getElementById('mount-btn').disabled=!(connected && !mounted && sw.partition && s.capabilities && s.capabilities.udisks_mount); document.getElementById('eject-btn').textContent=(s.capabilities&&s.capabilities.true_poweroff_available)?'Sync + Eject Switch':'Sync + Unmount Switch'; document.getElementById('copy-selected-btn').disabled=!(writable && selected.size>0); document.getElementById('notice').textContent = connected ? (mounted ? (writable?'Switch mounted and writable. Copy/upload controls enabled.':'Switch mounted read-only or not writable. Copy/upload disabled.') : 'Nyx USB Disk UMS is detected but no filesystem is mounted yet. Copy/upload disabled until mounted.') : ((s.cyberfoil_usb&&s.cyberfoil_usb.connected)?'CyberFoil/Nintendo USB is connected, but it is not exposed as MTP storage to Rocky. Use NS-USBLoader/compatible sender or switch to Nyx UMS for file browsing.':'No Switch UMS device detected.');}
+function renderStatus(s){statusCache=s; const sw=s.switch||{}; const mtp=s.mtp||{}; const connected=sw.detected; const mounted=!!sw.mount_path; const writable=!!sw.writable; document.getElementById('service-pill').textContent=s.healthy?'service healthy':'service degraded'; document.getElementById('status-grid').innerHTML=[card('Transfer root',s.root),card('Switch UMS',connected?'detected':'not detected',connected?'ok':'bad'),card('CyberFoil USB',(s.cyberfoil_usb&&s.cyberfoil_usb.connected)?s.cyberfoil_usb.mode:'not detected',(s.cyberfoil_usb&&s.cyberfoil_usb.connected)?'ok':'warn'),card('MTP raw device',mtp.raw_device_visible?'visible':'not visible',mtp.raw_device_visible?'ok':'warn'),card('MTP mount',mtp.mounted?mtp.mount_path:'not mounted',mtp.mounted?'ok':'warn'),card('Mount state',mounted?sw.mount_path:'not mounted',mounted?'ok':'warn'),card('Writable',writable?'yes':'no',writable?'ok':'warn'),card('Switch size',sw.size || (sw.usage&&sw.usage.total_human)),card('Switch free',sw.usage&&sw.usage.free_human)].join(''); document.getElementById('upload-card').classList.toggle('active', writable); document.getElementById('eject-btn').disabled=!connected; document.getElementById('mount-btn').disabled=!(connected && !mounted && sw.partition && s.capabilities && s.capabilities.udisks_mount); document.getElementById('eject-btn').textContent=(s.capabilities&&s.capabilities.true_poweroff_available)?'Sync + Eject Switch':'Sync + Unmount Switch'; document.getElementById('copy-selected-btn').disabled=!(writable && selected.size>0); document.getElementById('notice').textContent = connected ? (mounted ? (writable?'Switch mounted and writable. Copy/upload controls enabled.':'Switch mounted read-only or not writable. Copy/upload disabled.') : 'Nyx USB Disk UMS is detected but no filesystem is mounted yet. Copy/upload disabled until mounted.') : ((s.cyberfoil_usb&&s.cyberfoil_usb.connected)?'CyberFoil/Nintendo USB is connected, but it is not exposed as MTP storage to Rocky. Use NS-USBLoader/compatible sender or switch to Nyx UMS for file browsing.':'No Switch UMS device detected.');}
 function parentPath(){if(!currentPath) return ''; const parts=currentPath.split('/').filter(Boolean); parts.pop(); return parts.join('/')}
 function renderCrumb(){const crumb=document.getElementById('crumb'); const parts=currentPath.split('/').filter(Boolean); let html='<button onclick="openDirRaw(\'\')">Root</button>'; let acc=''; for(const part of parts){acc = acc ? acc + '/' + part : part; html += `<span>/</span><button onclick="openDirRaw('${encodeURIComponent(acc)}')">${esc(part)}</button>`} if(currentPath) html = `<button onclick="openDirRaw('${encodeURIComponent(parentPath())}')">← Back</button>` + html; crumb.innerHTML=html}
 function renderFiles(rows){const box=document.getElementById('files'); renderCrumb(); if(!rows.length){box.innerHTML='<div class="muted">No completed files in this folder.</div>'; return} box.innerHTML=rows.map(f=>{const isDir=f.kind==='directory'; const enc=encodeURIComponent(f.path); const checked=selected.has(f.path)?'checked':''; const sel=selected.has(f.path)?' selected':''; const icon=isDir?'📁':'📄'; const count=isDir && f.child_count!=null ? ` · ${f.child_count} items` : ''; return `<div class="file${sel}"><div class="file-name select-row"><input type="checkbox" ${checked} onchange="toggleSelected('${enc}', this.checked)" /><span>${icon} ${esc(f.name)}</span></div><div class="file-meta">${esc(f.kind)} · ${esc(f.size_human)}${count} · ${esc(f.modified)}</div><div class="actions">${isDir?`<button class="btn" onclick="openDir('${enc}')">Open</button><button class="btn" ${statusCache&&statusCache.switch&&statusCache.switch.writable?'':'disabled'} onclick="copyFile('${enc}')">Copy Folder to Switch</button><button class="btn btn-danger" onclick="deletePath('${enc}')">Delete Folder</button>`:`<a class="btn" href="${f.download_url}">Download</a><button class="btn" ${statusCache&&statusCache.switch&&statusCache.switch.writable?'':'disabled'} onclick="copyFile('${enc}')">Copy to Switch</button><button class="btn btn-danger" onclick="deletePath('${enc}')">Delete File</button>`}</div></div>`}).join(''); if(statusCache) renderStatus(statusCache)}
@@ -626,17 +827,21 @@ function renderSwitchFiles(rows){const box=document.getElementById('switch-files
 function setCopyTarget(t){copyTarget=(t||'').replace(/^\/+|\/+$/g,''); document.getElementById('target-input').value=copyTarget; document.getElementById('target-note').textContent='Target: /' + copyTarget}
 function applyTargetInput(){setCopyTarget(document.getElementById('target-input').value)}
 async function loadTargets(){try{const data=await j('/api/common-targets'); const sel=document.getElementById('target-select'); sel.innerHTML=data.targets.map(t=>`<option value="${esc(t.path)}">${esc(t.label)}</option>`).join(''); sel.onchange=()=>setCopyTarget(sel.value); if(!copyTarget && data.targets.length) setCopyTarget(data.targets[0].path)}catch(e){document.getElementById('target-select').innerHTML='<option value="">/</option>';}}
-async function loadAll(){try{await loadTargets(); const s=await j('/api/status'); renderStatus(s); const files=await j('/api/files?path='+encodeURIComponent(currentPath)); renderFiles(files.files); try{const sf=await j('/api/switch-files?path='+encodeURIComponent(switchPath)); renderSwitchFiles(sf.files)}catch(err){document.getElementById('switch-files').innerHTML='<div class="muted">'+esc(err.message)+'</div>'; renderSwitchCrumb()} log('Ready')}catch(e){log(e.message)}}
+async function loadAll(){try{await loadTargets(); const s=await j('/api/status'); renderStatus(s); const files=await j('/api/files?path='+encodeURIComponent(currentPath)); renderFiles(files.files); try{const sf=await j('/api/switch-files?path='+encodeURIComponent(switchPath)); renderSwitchFiles(sf.files)}catch(err){document.getElementById('switch-files').innerHTML='<div class="muted">'+esc(err.message)+'</div>'; renderSwitchCrumb()} try{const mf=await j('/api/mtp/files'); document.getElementById('mtp-files').innerHTML=mf.files.map(f=>`<div class="file"><div class="file-name">${f.kind==='directory'?'📁':'📄'} ${esc(f.name)}</div><div class="file-meta">${esc(f.kind)} · ${esc(f.size_human)} · ${esc(f.modified)}</div></div>`).join('')||'<div class="muted">MTP mounted but empty.</div>'}catch(err){document.getElementById('mtp-files').innerHTML='<div class="muted">'+esc(err.message)+'</div>'} log('Ready')}catch(e){log(e.message)}}
 function openDir(p){currentPath=decodeURIComponent(p); selected.clear(); loadAll()}
 function openDirRaw(p){currentPath=decodeURIComponent(p); selected.clear(); loadAll()}
 function openSwitchDir(p){switchPath=decodeURIComponent(p); loadAll()}
 function openSwitchDirRaw(p){switchPath=decodeURIComponent(p); loadAll()}
 function toggleSelected(p,on){const path=decodeURIComponent(p); if(on) selected.add(path); else selected.delete(path); if(statusCache) renderStatus(statusCache);}
 function clearSelection(){selected.clear(); loadAll()}
-async function copyFile(p){try{log(await j('/api/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:decodeURIComponent(p), target:copyTarget, replace:document.getElementById('replace-existing').checked})}))}catch(e){log(e.message)}}
-async function copySelected(){try{if(!selected.size) throw new Error('No files or folders selected'); log(await j('/api/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paths:Array.from(selected), target:copyTarget, replace:document.getElementById('replace-existing').checked})})); selected.clear(); await loadAll()}catch(e){log(e.message)}}
+async function startCopy(payload){const data=await j('/api/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); log(data); if(data.job) pollJob(data.job.id); return data}
+async function pollJob(id){try{const job=await j('/api/jobs/'+id); const lines=[`Transfer ${job.status} · ${job.percent}% · ${job.copied_human}/${job.total_human} · ${job.speed_human}`, job.current?`Current: ${job.current}`:'', '', ...(job.logs||[])]; if(job.error) lines.push('ERROR: '+job.error); log(lines.filter(Boolean).join('\n')); if(job.status==='running') setTimeout(()=>pollJob(id),1000); else await loadAll()}catch(e){log(e.message)}}
+async function copyFile(p){try{await startCopy({path:decodeURIComponent(p), target:copyTarget, replace:document.getElementById('replace-existing').checked})}catch(e){log(e.message)}}
+async function copySelected(){try{if(!selected.size) throw new Error('No files or folders selected'); await startCopy({paths:Array.from(selected), target:copyTarget, replace:document.getElementById('replace-existing').checked}); selected.clear(); await loadAll()}catch(e){log(e.message)}}
 async function deletePath(p){const path=decodeURIComponent(p); if(!confirm('Delete from Rocky completed files?\n\n'+path)) return; try{log(await j('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})})); selected.delete(path); await loadAll()}catch(e){log(e.message)}}
 async function mountSwitch(){try{log(await j('/api/mount',{method:'POST'})); await loadAll()}catch(e){log(e.message)}}
+async function mountMtp(){try{log(await j('/api/mtp/mount',{method:'POST'})); await loadAll()}catch(e){log(e.message)}}
+async function unmountMtp(){try{log(await j('/api/mtp/unmount',{method:'POST'})); await loadAll()}catch(e){log(e.message)}}
 async function ejectSwitch(){if(!confirm('Sync and eject the detected Switch USB storage?')) return; try{log(await j('/api/eject',{method:'POST'})); await loadAll()}catch(e){log(e.message)}}
 document.getElementById('upload-form').addEventListener('submit', async e=>{e.preventDefault(); try{const fd=new FormData(e.target); const r=await fetch('/api/upload',{method:'POST',body:fd}); log(await r.json()); await loadAll()}catch(err){log(err.message)}});
 loadAll(); setInterval(loadAll, 15000);
