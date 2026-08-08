@@ -451,9 +451,9 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             try:
                 rel = safe_rel_path(query.get("path", [""])[0])
                 root, files = self.state.switch_files(rel)
-                self.send_json({"root": str(root), "path": rel.as_posix(), "files": files})
+                self.send_json({"ok": True, "root": str(root), "path": rel.as_posix(), "files": files})
             except Exception as exc:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+                self.send_json({"ok": False, "error": str(exc), "files": []})
         elif path == "/api/mtp/status":
             self.send_json(self.state.mtp_status())
         elif path == "/api/mtp/files":
@@ -461,9 +461,9 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             try:
                 rel = safe_rel_path(query.get("path", [""])[0])
                 root, files = self.state.mtp_files(rel)
-                self.send_json({"root": str(root), "path": rel.as_posix(), "files": files})
+                self.send_json({"ok": True, "root": str(root), "path": rel.as_posix(), "files": files})
             except Exception as exc:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+                self.send_json({"ok": False, "error": str(exc), "files": []})
         elif path == "/api/common-targets":
             self.handle_common_targets()
         elif path == "/api/jobs":
@@ -624,7 +624,8 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
         try:
             switch = self.state.switch_mount()
             if not switch.mount_path:
-                raise ValueError("Switch SD is not mounted")
+                self.send_json({"ok": False, "error": "Switch SD is not mounted", "targets": [{"path": "", "label": "/"}]})
+                return
             root = Path(switch.mount_path).resolve()
             candidates = ["", "switch", "Nintendo", "atmosphere", "bootloader", "config"]
             rows = []
@@ -634,7 +635,7 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
                     rows.append({"path": rel, "label": "/" if not rel else "/" + rel})
             self.send_json({"ok": True, "targets": rows})
         except Exception as exc:
-            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+            self.send_json({"ok": False, "error": str(exc), "targets": [{"path": "", "label": "/"}]})
 
     def handle_delete(self) -> None:
         try:
@@ -703,7 +704,7 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             after = self.state.mtp_status()
             self.send_json({"ok": bool(after.get("mounted")), "command": f"jmtpfs {mount_root}", "returncode": result.returncode, "stdout": result.stdout.strip(), "stderr": result.stderr.strip(), "mtp": after}, HTTPStatus.OK if after.get("mounted") else HTTPStatus.BAD_REQUEST)
         except Exception as exc:
-            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+            self.send_json({"ok": False, "error": str(exc), "mtp": self.state.mtp_status()})
 
     def handle_mtp_unmount(self) -> None:
         try:
@@ -719,7 +720,7 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             after = self.state.mtp_status()
             self.send_json({"ok": not bool(after.get("mounted")), "command": f"{tool} -u {mount_root}", "returncode": result.returncode, "stdout": result.stdout.strip(), "stderr": result.stderr.strip(), "mtp": after}, HTTPStatus.OK if not after.get("mounted") else HTTPStatus.BAD_REQUEST)
         except Exception as exc:
-            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+            self.send_json({"ok": False, "error": str(exc), "mtp": self.state.mtp_status()})
 
     def handle_eject(self) -> None:
         switch = self.state.switch_mount()
