@@ -702,7 +702,7 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             mount_root.mkdir(parents=True, exist_ok=True)
             result = run_cmd([status["tools"]["jmtpfs"], str(mount_root)], timeout=20)
             after = self.state.mtp_status()
-            self.send_json({"ok": bool(after.get("mounted")), "command": f"jmtpfs {mount_root}", "returncode": result.returncode, "stdout": result.stdout.strip(), "stderr": result.stderr.strip(), "mtp": after}, HTTPStatus.OK if after.get("mounted") else HTTPStatus.BAD_REQUEST)
+            self.send_json({"ok": bool(after.get("mounted")), "command": f"jmtpfs {mount_root}", "returncode": result.returncode, "stdout": result.stdout.strip(), "stderr": result.stderr.strip(), "mtp": after})
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc), "mtp": self.state.mtp_status()})
 
