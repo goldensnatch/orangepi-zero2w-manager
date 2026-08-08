@@ -67,6 +67,33 @@ def _resolve_completed(raw: str) -> Path:
     return target
 
 
+def _resolve_completed_selection(raw: str) -> list[Path]:
+    rel = _safe_relative(raw)
+    target = (TRANSFER_ROOT / rel).resolve()
+    if not str(target).startswith(str(TRANSFER_ROOT)):
+        raise ValueError("path escapes transfer root")
+    if not target.exists():
+        raise ValueError(f"selection does not exist: {rel.as_posix()}")
+    if target.is_file():
+        return [_resolve_completed(raw)]
+    if target.is_dir():
+        files = sorted(
+            (child for child in target.rglob("*") if child.is_file() and child.suffix.lower() in ALLOWED_SUFFIXES),
+            key=lambda child: child.as_posix().lower(),
+        )
+        if not files:
+            raise ValueError(f"folder contains no supported package files: {rel.as_posix()}")
+        return files
+    raise ValueError(f"selection is not a file or folder: {rel.as_posix()}")
+
+
+def _directory_has_eligible_files(path: Path) -> bool:
+    try:
+        return any(child.is_file() and child.suffix.lower() in ALLOWED_SUFFIXES for child in path.rglob("*"))
+    except OSError:
+        return False
+
+
 def _lsusb_text() -> str:
     if not shutil.which("lsusb"):
         return ""
@@ -114,13 +141,14 @@ def list_files(rel: str = "") -> dict[str, object]:
     for child in sorted(base.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))[:MAX_LIST_ITEMS]:
         rel_child = child.relative_to(TRANSFER_ROOT).as_posix()
         stat = child.stat()
+        eligible = (child.is_file() and child.suffix.lower() in ALLOWED_SUFFIXES) or (child.is_dir() and _directory_has_eligible_files(child))
         items.append({
             "name": child.name,
             "path": rel_child,
             "kind": "directory" if child.is_dir() else "file",
             "size": stat.st_size if child.is_file() else None,
             "mtime": int(stat.st_mtime),
-            "eligible": child.is_file() and child.suffix.lower() in ALLOWED_SUFFIXES,
+            "eligible": eligible,
         })
     return {"root": str(TRANSFER_ROOT), "path": base_rel.as_posix(), "items": items}
 
@@ -149,7 +177,9 @@ def start_install_job(payload: dict[str, object]) -> Job:
         paths = [paths]
     if not isinstance(paths, list) or not paths:
         raise ValueError("paths is required")
-    files = [_resolve_completed(str(p)) for p in paths]
+    files = []
+    for selected in paths:
+        files.extend(_resolve_completed_selection(str(selected)))
     java = shutil.which("java") or "java"
     cmd = [java, "-jar", str(NS_USBLOADER_JAR)]
     if mode in {"network", "awoo-network", "tfn"}:
@@ -261,11 +291,14 @@ class Handler(BaseHTTPRequestHandler):
             files = list_files("")["items"]
         except Exception:
             files = []
+        eligible_count = sum(1 for item in files if item.get("eligible"))
         rows = "".join(
-            f"<label><input type='checkbox' value='{html.escape(str(item['path']))}' {'disabled' if not item.get('eligible') else ''}> "
-            f"{html.escape(str(item['name']))} <small>{html.escape(str(item['kind']))}</small></label>"
+            f"<label title='{'Contains supported package files' if item.get('eligible') else 'No .nsp/.nsz/.xci/.xcz/.nro/.bin files found here'}'><input type='checkbox' value='{html.escape(str(item['path']))}' {'disabled' if not item.get('eligible') else ''}> "
+            f"{html.escape(str(item['name']))} <small>{html.escape(str(item['kind']))}{' · selectable' if item.get('eligible') else ' · no supported package files'}</small></label>"
             for item in files[:100]
-        ) or "<p>No package-like files found in completed transfers.</p>"
+        ) or "<p>No completed transfer folders/files found.</p>"
+        if files and eligible_count == 0:
+            rows += "<p><strong>No selectable package files found yet.</strong> NS-USBloader only accepts completed .nsp/.nsz/.xci/.xcz/.nro/.bin files. Archive parts such as .rar/.r00/.r01 must be unpacked into a lawful personal backup/package before they can be sent.</p>"
         body = f"""<!doctype html>
 <html><head><meta charset='utf-8'><title>Rocky NS-USBloader</title>
 <style>
