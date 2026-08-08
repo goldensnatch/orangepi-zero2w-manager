@@ -1,0 +1,18 @@
+[Unit]
+Description=Rocky NS-USBloader control service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zero2w-manager
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/opt/zero2w-manager/runtime/java/bin:/usr/local/bin:/usr/bin:/bin
+Environment=ROCKY_TRANSFER_COMPLETE=/mnt/rocky-transfer/complete
+Environment=NS_USBLOADER_JAR=/opt/zero2w-manager/runtime/ns-usbloader/ns-usbloader.jar
+ExecStart=/opt/zero2w-manager/venv/bin/python3 /opt/zero2w-manager/scripts/ns_usbloader_control.py --host 0.0.0.0 --port 8078
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
