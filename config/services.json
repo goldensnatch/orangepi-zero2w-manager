@@ -368,22 +368,36 @@
     "systemd_user_service": "rocky-switch-transfer.service",
     "docker_container": null
   },
-  "services": [
-    {
-      "id": "ns_usbloader",
-      "name": "NS USBLoader",
-      "description": "Send completed Switch files to DBI/Awoo/Goldleaf-compatible installers over USB or network.",
-      "category": "Gaming",
-      "url": "http://127.0.0.1:8078/",
-      "systemd_user_service": "rocky-ns-usbloader.service"
-    },
-    {
-      "id": "mini_pc_transfer",
-      "name": "Mini-PC Transfer",
-      "description": "Export selected Rocky completed-transfer files/folders to the Windows mini-PC over SSH/SCP.",
-      "category": "Transfer",
-      "url": "http://127.0.0.1:8079/",
-      "systemd_user_service": "rocky-mini-pc-transfer.service"
-    }
-  ]
+  "ns_usbloader": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Send completed Switch files to DBI/Awoo/Goldleaf-compatible installers over USB or network.",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 13,
+    "menu_visible": true,
+    "name": "NS USBLoader",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:8078/",
+    "systemd_service": null,
+    "systemd_user_service": "rocky-ns-usbloader.service",
+    "docker_container": null
+  },
+  "mini_pc_transfer": {
+    "background_allowed": true,
+    "command": null,
+    "description": "Export selected Rocky completed-transfer files/folders to the Windows mini-PC over SSH/SCP.",
+    "display_owner": false,
+    "environment": {},
+    "menu_order": 14,
+    "menu_visible": true,
+    "name": "Mini-PC Transfer",
+    "network_owner": false,
+    "type": "background_service",
+    "url": "http://127.0.0.1:8079/",
+    "systemd_service": null,
+    "systemd_user_service": "rocky-mini-pc-transfer.service",
+    "docker_container": null
+  }
 }
