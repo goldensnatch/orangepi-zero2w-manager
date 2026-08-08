@@ -238,6 +238,42 @@ class SwitchTransferState:
         }
 
 
+
+def merge_copy(src: Path, dest: Path, *, replace: bool) -> dict[str, Any]:
+    copied = 0
+    skipped = 0
+    replaced = 0
+    bytes_copied = 0
+
+    def copy_file(source: Path, target: Path) -> None:
+        nonlocal copied, skipped, replaced, bytes_copied
+        if target.exists():
+            if not replace:
+                skipped += 1
+                return
+            replaced += 1
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        copied += 1
+        try:
+            bytes_copied += source.stat().st_size
+        except OSError:
+            pass
+
+    if src.is_dir():
+        dest.mkdir(parents=True, exist_ok=True)
+        for item in src.rglob("*"):
+            rel = item.relative_to(src)
+            target = dest / rel
+            if item.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif item.is_file():
+                copy_file(item, target)
+    else:
+        copy_file(src, dest)
+
+    return {"copied_files": copied, "skipped_files": skipped, "replaced_files": replaced, "bytes_copied": bytes_copied, "bytes_human": human_size(bytes_copied)}
+
 class SwitchTransferHandler(BaseHTTPRequestHandler):
     server_version = "RockySwitchTransfer/2.0"
 
@@ -283,6 +319,8 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
                 self.send_json({"root": str(root), "path": rel.as_posix(), "files": files})
             except Exception as exc:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+        elif path == "/api/common-targets":
+            self.handle_common_targets()
         elif path.startswith("/file/"):
             self.send_file(path.removeprefix("/file/"))
         else:
@@ -320,34 +358,36 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             raise ValueError("source is not a regular file or directory")
         return src
 
-    def resolve_switch_dest(self, name: str) -> Path:
+    def resolve_switch_target_root(self, target: str = "") -> Path:
         switch = self.state.switch_mount()
         if not switch.mount_path:
             raise ValueError("Switch USB is detected but not mounted")
         if not switch.writable:
             raise ValueError("Switch mount is not writable")
+        dest_root = Path(switch.mount_path).resolve()
+        rel = safe_rel_path(target or "")
+        target_root = (dest_root / rel).resolve()
+        if dest_root not in [target_root, *target_root.parents]:
+            raise ValueError("target folder is outside Switch mount")
+        target_root.mkdir(parents=True, exist_ok=True)
+        return target_root
+
+    def resolve_switch_dest(self, name: str, *, target: str = "") -> Path:
         safe = Path(name).name
         if not safe:
             raise ValueError("invalid destination name")
-        dest_root = Path(switch.mount_path).resolve()
-        dest = (dest_root / safe).resolve()
-        if dest_root not in [dest, *dest.parents]:
-            raise ValueError("destination outside Switch mount")
+        target_root = self.resolve_switch_target_root(target)
+        dest = (target_root / safe).resolve()
+        if target_root not in [dest, *dest.parents]:
+            raise ValueError("destination outside selected Switch target")
         return dest
 
-    def copy_source_to_switch(self, src: Path) -> dict[str, Any]:
-        dest = self.resolve_switch_dest(src.name)
-        if dest.exists():
-            raise FileExistsError(f"destination already exists: {dest.name}")
-        if src.is_dir():
-            shutil.copytree(src, dest, copy_function=shutil.copy2)
-            size = directory_size(src)
-            kind = "directory"
-        else:
-            shutil.copy2(src, dest)
-            size = src.stat().st_size
-            kind = "file"
-        return {"name": src.name, "kind": kind, "destination": str(dest), "size": size, "size_human": human_size(size)}
+    def copy_source_to_switch(self, src: Path, *, target: str = "", replace: bool = False) -> dict[str, Any]:
+        dest = self.resolve_switch_dest(src.name, target=target)
+        kind = "directory" if src.is_dir() else "file"
+        size = directory_size(src) if src.is_dir() else src.stat().st_size
+        result = merge_copy(src, dest, replace=replace)
+        return {"name": src.name, "kind": kind, "destination": str(dest), "size": size, "size_human": human_size(size), **result}
 
     def handle_copy(self) -> None:
         try:
@@ -357,11 +397,13 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
                 raw_paths = [payload.get("path")]
             if not isinstance(raw_paths, list) or not raw_paths:
                 raise ValueError("paths must be a non-empty list")
+            target = str(payload.get("target") or "")
+            replace = bool(payload.get("replace"))
             copied: list[dict[str, Any]] = []
             for raw in raw_paths:
                 src = self.resolve_source(str(raw or ""), allow_directory=True)
-                copied.append(self.copy_source_to_switch(src))
-            self.send_json({"ok": True, "copied": copied, "count": len(copied)})
+                copied.append(self.copy_source_to_switch(src, target=target, replace=replace))
+            self.send_json({"ok": True, "target": target or "/", "replace": replace, "copied": copied, "count": len(copied)})
         except Exception as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
 
@@ -380,6 +422,22 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             with dest.open("wb") as out:
                 shutil.copyfileobj(field.file, out)
             self.send_json({"ok": True, "uploaded": dest.name, "destination": str(dest), "size": dest.stat().st_size})
+        except Exception as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_common_targets(self) -> None:
+        try:
+            switch = self.state.switch_mount()
+            if not switch.mount_path:
+                raise ValueError("Switch SD is not mounted")
+            root = Path(switch.mount_path).resolve()
+            candidates = ["", "switch", "Nintendo", "atmosphere", "bootloader", "config"]
+            rows = []
+            for rel in candidates:
+                path = (root / rel).resolve()
+                if root in [path, *path.parents] and path.exists() and path.is_dir():
+                    rows.append({"path": rel, "label": "/" if not rel else "/" + rel})
+            self.send_json({"ok": True, "targets": rows})
         except Exception as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
 
@@ -516,13 +574,14 @@ HTML = r'''<!doctype html>
 <section class="hero"><div><div class="kicker">Rocky Control Plane</div><div class="title">Switch Transfer</div><div class="subtitle">Polished LAN transfer surface rooted at completed Rocky downloads. For homebrew, personal media, saves, patches, and lawful backups only.</div></div><div class="pill" id="service-pill">loading…</div></section>
 <section class="grid" id="status-grid"></section>
 <div class="notice" id="notice"></div>
+<section class="card"><div class="label">Switch Copy Target</div><div class="toolbar"><select id="target-select"></select><input id="target-input" placeholder="Custom target folder, e.g. switch" /><label class="muted"><input type="checkbox" id="replace-existing" /> Replace existing files</label><button class="btn" onclick="applyTargetInput()">Use Target</button></div><div class="muted" id="target-note">Target: /</div></section>
 <section class="card upload" id="upload-card"><div class="label">Upload to Switch</div><form id="upload-form"><input name="file" type="file" required /> <button class="btn" type="submit">Upload</button></form></section>
 <section class="toolbar"><button class="btn" onclick="loadAll()">Refresh</button><button class="btn" id="mount-btn" onclick="mountSwitch()">Mount Switch UMS</button><button class="btn" id="copy-selected-btn" onclick="copySelected()">Copy Selected to Switch</button><button class="btn" onclick="clearSelection()">Clear Selection</button><button class="btn btn-danger" id="eject-btn" onclick="ejectSwitch()">Sync + Eject Switch</button><a class="btn" href="/__health">Health JSON</a><a class="btn" href="/api/status">Status JSON</a></section>
 <section class="browser card"><div class="label">Completed files</div><div class="crumb" id="crumb">/</div><div class="file-grid" id="files"></div></section>
 <section class="browser card"><div class="label">Switch SD Card</div><div class="muted">Read-only browser for the mounted UMS SD card.</div><div class="crumb" id="switch-crumb">/</div><div class="file-grid" id="switch-files"></div></section>
 <pre id="log"></pre>
 </main><script>
-let currentPath=''; let switchPath=''; let statusCache=null; const selected=new Set();
+let currentPath=''; let switchPath=''; let copyTarget=''; let statusCache=null; const selected=new Set();
 const fmt = v => v || '—';
 function esc(s){return String(s ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function j(url, opts){const r=await fetch(url, opts); const data=await r.json(); if(!r.ok) throw new Error(data.error || r.statusText); return data}
@@ -534,16 +593,19 @@ function renderCrumb(){const crumb=document.getElementById('crumb'); const parts
 function renderFiles(rows){const box=document.getElementById('files'); renderCrumb(); if(!rows.length){box.innerHTML='<div class="muted">No completed files in this folder.</div>'; return} box.innerHTML=rows.map(f=>{const isDir=f.kind==='directory'; const enc=encodeURIComponent(f.path); const checked=selected.has(f.path)?'checked':''; const sel=selected.has(f.path)?' selected':''; const icon=isDir?'📁':'📄'; const count=isDir && f.child_count!=null ? ` · ${f.child_count} items` : ''; return `<div class="file${sel}"><div class="file-name select-row"><input type="checkbox" ${checked} onchange="toggleSelected('${enc}', this.checked)" /><span>${icon} ${esc(f.name)}</span></div><div class="file-meta">${esc(f.kind)} · ${esc(f.size_human)}${count} · ${esc(f.modified)}</div><div class="actions">${isDir?`<button class="btn" onclick="openDir('${enc}')">Open</button><button class="btn" ${statusCache&&statusCache.switch&&statusCache.switch.writable?'':'disabled'} onclick="copyFile('${enc}')">Copy Folder to Switch</button><button class="btn btn-danger" onclick="deletePath('${enc}')">Delete Folder</button>`:`<a class="btn" href="${f.download_url}">Download</a><button class="btn" ${statusCache&&statusCache.switch&&statusCache.switch.writable?'':'disabled'} onclick="copyFile('${enc}')">Copy to Switch</button><button class="btn btn-danger" onclick="deletePath('${enc}')">Delete File</button>`}</div></div>`}).join(''); if(statusCache) renderStatus(statusCache)}
 function switchParentPath(){if(!switchPath) return ''; const parts=switchPath.split('/').filter(Boolean); parts.pop(); return parts.join('/')}
 function renderSwitchCrumb(){const crumb=document.getElementById('switch-crumb'); const parts=switchPath.split('/').filter(Boolean); let html='<button onclick="openSwitchDirRaw(\'\')">Root</button>'; let acc=''; for(const part of parts){acc = acc ? acc + '/' + part : part; html += `<span>/</span><button onclick="openSwitchDirRaw('${encodeURIComponent(acc)}')">${esc(part)}</button>`} if(switchPath) html = `<button onclick="openSwitchDirRaw('${encodeURIComponent(switchParentPath())}')">← Back</button>` + html; crumb.innerHTML=html}
-function renderSwitchFiles(rows){const box=document.getElementById('switch-files'); renderSwitchCrumb(); if(!rows.length){box.innerHTML='<div class="muted">No files shown, or Switch SD is not mounted.</div>'; return} box.innerHTML=rows.map(f=>{const isDir=f.kind==='directory'; const enc=encodeURIComponent(f.path); const icon=isDir?'📁':'📄'; const count=isDir && f.child_count!=null ? ` · ${f.child_count} items` : ''; return `<div class="file"><div class="file-name">${icon} ${esc(f.name)}</div><div class="file-meta">${esc(f.kind)} · ${esc(f.size_human)}${count} · ${esc(f.modified)}</div><div class="actions">${isDir?`<button class="btn" onclick="openSwitchDir('${enc}')">Open</button>`:''}</div></div>`}).join('')}
-async function loadAll(){try{const s=await j('/api/status'); renderStatus(s); const files=await j('/api/files?path='+encodeURIComponent(currentPath)); renderFiles(files.files); try{const sf=await j('/api/switch-files?path='+encodeURIComponent(switchPath)); renderSwitchFiles(sf.files)}catch(err){document.getElementById('switch-files').innerHTML='<div class="muted">'+esc(err.message)+'</div>'; renderSwitchCrumb()} log('Ready')}catch(e){log(e.message)}}
+function renderSwitchFiles(rows){const box=document.getElementById('switch-files'); renderSwitchCrumb(); if(!rows.length){box.innerHTML='<div class="muted">No files shown, or Switch SD is not mounted.</div>'; return} box.innerHTML=rows.map(f=>{const isDir=f.kind==='directory'; const enc=encodeURIComponent(f.path); const icon=isDir?'📁':'📄'; const count=isDir && f.child_count!=null ? ` · ${f.child_count} items` : ''; return `<div class="file"><div class="file-name">${icon} ${esc(f.name)}</div><div class="file-meta">${esc(f.kind)} · ${esc(f.size_human)}${count} · ${esc(f.modified)}</div><div class="actions">${isDir?`<button class="btn" onclick="openSwitchDir('${enc}')">Open</button><button class="btn" onclick="setCopyTarget(decodeURIComponent('${enc}'))">Use as Target</button>`:''}</div></div>`}).join('')}
+function setCopyTarget(t){copyTarget=(t||'').replace(/^\/+|\/+$/g,''); document.getElementById('target-input').value=copyTarget; document.getElementById('target-note').textContent='Target: /' + copyTarget}
+function applyTargetInput(){setCopyTarget(document.getElementById('target-input').value)}
+async function loadTargets(){try{const data=await j('/api/common-targets'); const sel=document.getElementById('target-select'); sel.innerHTML=data.targets.map(t=>`<option value="${esc(t.path)}">${esc(t.label)}</option>`).join(''); sel.onchange=()=>setCopyTarget(sel.value); if(!copyTarget && data.targets.length) setCopyTarget(data.targets[0].path)}catch(e){document.getElementById('target-select').innerHTML='<option value="">/</option>';}}
+async function loadAll(){try{await loadTargets(); const s=await j('/api/status'); renderStatus(s); const files=await j('/api/files?path='+encodeURIComponent(currentPath)); renderFiles(files.files); try{const sf=await j('/api/switch-files?path='+encodeURIComponent(switchPath)); renderSwitchFiles(sf.files)}catch(err){document.getElementById('switch-files').innerHTML='<div class="muted">'+esc(err.message)+'</div>'; renderSwitchCrumb()} log('Ready')}catch(e){log(e.message)}}
 function openDir(p){currentPath=decodeURIComponent(p); selected.clear(); loadAll()}
 function openDirRaw(p){currentPath=decodeURIComponent(p); selected.clear(); loadAll()}
 function openSwitchDir(p){switchPath=decodeURIComponent(p); loadAll()}
 function openSwitchDirRaw(p){switchPath=decodeURIComponent(p); loadAll()}
 function toggleSelected(p,on){const path=decodeURIComponent(p); if(on) selected.add(path); else selected.delete(path); if(statusCache) renderStatus(statusCache);}
 function clearSelection(){selected.clear(); loadAll()}
-async function copyFile(p){try{log(await j('/api/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:decodeURIComponent(p)})}))}catch(e){log(e.message)}}
-async function copySelected(){try{if(!selected.size) throw new Error('No files or folders selected'); log(await j('/api/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paths:Array.from(selected)})})); selected.clear(); await loadAll()}catch(e){log(e.message)}}
+async function copyFile(p){try{log(await j('/api/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:decodeURIComponent(p), target:copyTarget, replace:document.getElementById('replace-existing').checked})}))}catch(e){log(e.message)}}
+async function copySelected(){try{if(!selected.size) throw new Error('No files or folders selected'); log(await j('/api/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paths:Array.from(selected), target:copyTarget, replace:document.getElementById('replace-existing').checked})})); selected.clear(); await loadAll()}catch(e){log(e.message)}}
 async function deletePath(p){const path=decodeURIComponent(p); if(!confirm('Delete from Rocky completed files?\n\n'+path)) return; try{log(await j('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})})); selected.delete(path); await loadAll()}catch(e){log(e.message)}}
 async function mountSwitch(){try{log(await j('/api/mount',{method:'POST'})); await loadAll()}catch(e){log(e.message)}}
 async function ejectSwitch(){if(!confirm('Sync and eject the detected Switch USB storage?')) return; try{log(await j('/api/eject',{method:'POST'})); await loadAll()}catch(e){log(e.message)}}
