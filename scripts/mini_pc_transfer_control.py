@@ -43,6 +43,11 @@ class Job:
     stdout: str = ""
     stderr: str = ""
     completed_at: float | None = None
+    verified: bool = False
+    verification_stdout: str = ""
+    verification_stderr: str = ""
+    deleted: bool = False
+    deleted_paths: list[str] = field(default_factory=list)
 
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
@@ -152,6 +157,25 @@ def windows_dest_for_scp(dest: str) -> str:
     return cleaned
 
 
+def windows_join_path(base: str, name: str) -> str:
+    return base.strip().replace("/", "\\").rstrip("\\") + "\\" + name
+
+
+def ps_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def mini_pc_ssh_base() -> list[str]:
+    cfg = load_config()
+    key = str(cfg.get("ssh_key") or DEFAULT_KEY)
+    port = str(cfg.get("port") or 22)
+    user = str(cfg.get("user") or "").strip()
+    host = str(cfg.get("host") or "").strip()
+    if not user or not host:
+        raise ValueError("mini-PC host/user config is incomplete")
+    return ["ssh", "-i", key, "-p", port, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", f"{user}@{host}"]
+
+
 def status_payload() -> dict[str, object]:
     ensure_key()
     config = load_config()
@@ -200,18 +224,59 @@ def make_transfer_command(paths: list[str]) -> list[str]:
     return ["scp", "-r", "-p", "-i", key, "-P", port, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", *sources, f"{user}@{host}:{dest}"]
 
 
+def verify_remote_transfer(job: Job) -> None:
+    cfg = load_config()
+    dest = str(cfg.get("destination") or "").strip()
+    checks = []
+    for raw in job.paths:
+        source = resolve_source(raw)
+        remote = windows_join_path(dest, source.name)
+        checks.append(f"if (-not (Test-Path -LiteralPath {ps_single_quote(remote)})) {{ Write-Error {ps_single_quote('Missing: ' + remote)}; exit 1 }}")
+    script = "; ".join(checks + ["Write-Output 'ROCKY_TRANSFER_VERIFIED'"] )
+    proc = subprocess.run([*mini_pc_ssh_base(), "powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, check=False, timeout=120)
+    job.verification_stdout = (proc.stdout or "")[-10000:]
+    job.verification_stderr = (proc.stderr or "")[-10000:]
+    job.verified = proc.returncode == 0 and "ROCKY_TRANSFER_VERIFIED" in proc.stdout
+
+
 def run_job(job: Job) -> None:
     try:
         proc = subprocess.run(job.command, capture_output=True, text=True, check=False, timeout=None)
         job.returncode = proc.returncode
         job.stdout = (proc.stdout or "")[-40000:]
         job.stderr = (proc.stderr or "")[-40000:]
-        job.status = "completed" if proc.returncode == 0 else "failed"
+        if proc.returncode == 0:
+            verify_remote_transfer(job)
+            job.status = "completed" if job.verified else "verify_failed"
+        else:
+            job.status = "failed"
     except Exception as exc:
         job.status = "failed"
         job.stderr = str(exc)
     finally:
         job.completed_at = time.time()
+
+
+def delete_after_verify(job_id: str) -> dict[str, object]:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if not job:
+        raise ValueError("job not found")
+    if job.deleted:
+        return {"ok": True, "message": "already deleted", "deleted_paths": job.deleted_paths}
+    if job.status != "completed" or job.returncode != 0 or not job.verified:
+        raise ValueError("refusing to delete: transfer job is not completed and verified")
+    deleted = []
+    for raw in job.paths:
+        source = resolve_source(raw)
+        if source.is_dir():
+            shutil.rmtree(source)
+        else:
+            source.unlink()
+        deleted.append(raw)
+    job.deleted = True
+    job.deleted_paths = deleted
+    return {"ok": True, "deleted_paths": deleted, "count": len(deleted)}
 
 
 def start_transfer(payload: dict[str, object]) -> Job:
@@ -245,6 +310,11 @@ def job_payload(job: Job) -> dict[str, object]:
         "command": cmd,
         "stdout": job.stdout,
         "stderr": job.stderr,
+        "verified": job.verified,
+        "verification_stdout": job.verification_stdout,
+        "verification_stderr": job.verification_stderr,
+        "deleted": job.deleted,
+        "deleted_paths": job.deleted_paths,
     }
 
 
@@ -309,6 +379,9 @@ class Handler(BaseHTTPRequestHandler):
             elif req.path == "/api/transfer":
                 job = start_transfer(payload)
                 self._json({"ok": True, "job": job_payload(job)}, HTTPStatus.ACCEPTED)
+            elif req.path == "/api/delete-after-verify":
+                job_id = str(payload.get("job_id") or "").strip()
+                self._json(delete_after_verify(job_id))
             else:
                 self._error(HTTPStatus.NOT_FOUND, "not found")
         except ValueError as exc:
@@ -331,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
         body = f"""<!doctype html><html><head><meta charset='utf-8'><title>Rocky Mini-PC Transfer</title>
 <style>body{{font-family:system-ui,sans-serif;background:#060a0f;color:#e2e8f0;margin:2rem}}.card{{border:1px solid #1f2937;background:#0b1220;border-radius:14px;padding:1rem;margin:1rem 0}}.ok{{color:#22c55e}}.bad{{color:#ef4444}}small{{color:#94a3b8}}input,button{{font:inherit;margin:.25rem}}input[type=text]{{min-width:18rem}}button{{background:#00d4ff;color:#001018;border:0;border-radius:8px;padding:.5rem .75rem;font-weight:700}}.files label{{display:block;padding:.35rem;border-bottom:1px solid #172033}}pre{{white-space:pre-wrap;background:#020617;padding:1rem;border-radius:10px;overflow:auto}}</style></head><body>
 <h1>Rocky → Mini-PC Transfer</h1>
-<p>Moves selected completed-transfer files/folders from Rocky to the mini-PC over SSH/SCP. No auto-delete.</p>
+<p>Moves selected completed-transfer files/folders from Rocky to the mini-PC over SSH/SCP. Deletion is manual and only enabled after a completed transfer verifies the remote path exists.</p>
 <div class='card'><h2>Status</h2><p class='{'ok' if status['healthy'] else 'bad'}'>{'Healthy' if status['healthy'] else 'Needs check'}</p><ul><li>Mini-PC: {html.escape(str(cfg.get('user')))}@{html.escape(str(cfg.get('host')))}:{html.escape(str(cfg.get('destination')))}</li><li>SSH auth: {'OK' if status['auth_ok'] else 'not ready yet'}</li><li>Transfer root: {html.escape(str(status['transfer_root']))}</li></ul><details><summary>Rocky public key to add to Windows authorized_keys</summary><pre>{html.escape(str(status['public_key']))}</pre></details></div>
 <div class='card'><h2>Config</h2><label>Host <input id='host' value='{html.escape(str(cfg.get('host')))}'></label><label>User <input id='user' value='{html.escape(str(cfg.get('user')))}'></label><label>Dest <input id='dest' value='{html.escape(str(cfg.get('destination')))}'></label><button onclick='saveConfig()'>Save config</button></div>
 <div class='card'><h2>Select exports</h2><div class='files'>{rows}</div><button onclick='startTransfer()'>Transfer selected to mini-PC</button><pre id='out'></pre></div>
@@ -339,8 +412,11 @@ class Handler(BaseHTTPRequestHandler):
 async function j(url,opts){{const r=await fetch(url,opts); const data=await r.json(); if(!r.ok) throw new Error(data.error||r.statusText); return data}}
 function log(x){{document.getElementById('out').textContent=typeof x==='string'?x:JSON.stringify(x,null,2)}}
 async function saveConfig(){{try{{log(await j('/api/config',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{host:host.value,user:user.value,destination:dest.value}})}}))}}catch(e){{log(e.message)}}}}
-async function startTransfer(){{try{{const paths=[...document.querySelectorAll('input[type=checkbox]:checked')].map(x=>x.value); if(!paths.length) throw new Error('Select at least one file/folder'); const data=await j('/api/transfer',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{paths}})}}); log(data); if(data.job) poll(data.job.id)}}catch(e){{log(e.message)}}}}
-async function poll(id){{const data=await j('/api/jobs/'+id); log(data); if(data.status==='running') setTimeout(()=>poll(id),2000)}}
+let lastJobId=null;
+async function startTransfer(){{try{{const paths=[...document.querySelectorAll('input[type=checkbox]:checked')].map(x=>x.value); if(!paths.length) throw new Error('Select at least one file/folder'); const data=await j('/api/transfer',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{paths}})}}); lastJobId=data.job&&data.job.id; log(data); if(data.job) poll(data.job.id)}}catch(e){{log(e.message)}}}}
+async function poll(id){{const data=await j('/api/jobs/'+id); lastJobId=id; log(data); if(data.status==='running') setTimeout(()=>poll(id),2000); else if(data.status==='completed' && data.verified && !data.deleted) showDeleteButton(id)}}
+function showDeleteButton(id){{const out=document.getElementById('out'); if(document.getElementById('delete-verified')) return; const btn=document.createElement('button'); btn.id='delete-verified'; btn.textContent='Delete verified transfer from Rocky'; btn.style.background='#ef4444'; btn.onclick=()=>deleteVerified(id); out.parentNode.insertBefore(btn,out.nextSibling)}}
+async function deleteVerified(id){{try{{if(!confirm('Delete the transferred source files/folders from Rocky? This cannot be undone.')) return; const data=await j('/api/delete-after-verify',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{job_id:id}})}}); log(data); location.reload()}}catch(e){{log(e.message)}}}}
 </script></body></html>"""
         data = body.encode("utf-8")
         self.send_response(HTTPStatus.OK)
