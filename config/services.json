@@ -376,6 +376,14 @@
       "category": "Gaming",
       "url": "http://127.0.0.1:8078/",
       "systemd_user_service": "rocky-ns-usbloader.service"
+    },
+    {
+      "id": "mini_pc_transfer",
+      "name": "Mini-PC Transfer",
+      "description": "Export selected Rocky completed-transfer files/folders to the Windows mini-PC over SSH/SCP.",
+      "category": "Transfer",
+      "url": "http://127.0.0.1:8079/",
+      "systemd_user_service": "rocky-mini-pc-transfer.service"
     }
   ]
 }

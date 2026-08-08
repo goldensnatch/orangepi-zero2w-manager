@@ -1,0 +1,17 @@
+[Unit]
+Description=Rocky Mini-PC transfer control service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zero2w-manager
+Environment=PYTHONUNBUFFERED=1
+Environment=ROCKY_TRANSFER_COMPLETE=/mnt/rocky-transfer/complete
+Environment=MINI_PC_TRANSFER_CONFIG=/opt/zero2w-manager/runtime/config/mini-pc-transfer.json
+ExecStart=/opt/zero2w-manager/venv/bin/python3 /opt/zero2w-manager/scripts/mini_pc_transfer_control.py --host 0.0.0.0 --port 8079
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
