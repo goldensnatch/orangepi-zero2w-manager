@@ -367,5 +367,15 @@
     "systemd_service": null,
     "systemd_user_service": "rocky-switch-transfer.service",
     "docker_container": null
-  }
+  },
+  "services": [
+    {
+      "id": "ns_usbloader",
+      "name": "NS USBLoader",
+      "description": "Send completed Switch files to DBI/Awoo/Goldleaf-compatible installers over USB or network.",
+      "category": "Gaming",
+      "url": "http://127.0.0.1:8078/",
+      "systemd_user_service": "rocky-ns-usbloader.service"
+    }
+  ]
 }
