@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 import os
@@ -165,6 +166,11 @@ def ps_single_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def powershell_args(script: str) -> list[str]:
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    return ["powershell", "-NoProfile", "-EncodedCommand", encoded]
+
+
 def mini_pc_ssh_base() -> list[str]:
     cfg = load_config()
     key = str(cfg.get("ssh_key") or DEFAULT_KEY)
@@ -174,6 +180,109 @@ def mini_pc_ssh_base() -> list[str]:
     if not user or not host:
         raise ValueError("mini-PC host/user config is incomplete")
     return ["ssh", "-i", key, "-p", port, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", f"{user}@{host}"]
+
+
+def remote_size_bytes(remote_path: str) -> int:
+    script = (
+        f"$p={ps_single_quote(remote_path)}; "
+        "if (-not (Test-Path -LiteralPath $p)) { exit 2 }; "
+        "$i=Get-Item -LiteralPath $p -Force; "
+        "if ($i.PSIsContainer) { "
+        "  $s=(Get-ChildItem -LiteralPath $p -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum; "
+        "  if ($null -eq $s) { $s=0 }; [Int64]$s "
+        "} else { [Int64]$i.Length }"
+    )
+    proc = subprocess.run([*mini_pc_ssh_base(), *powershell_args(script)], capture_output=True, text=True, check=False, timeout=600)
+    if proc.returncode != 0:
+        raise ValueError((proc.stderr or proc.stdout or f"remote path not found: {remote_path}").strip())
+    return int((proc.stdout or "0").strip().splitlines()[-1])
+
+
+def remote_exports_status() -> dict[str, object]:
+    cfg = load_config()
+    dest = str(cfg.get("destination") or "").strip()
+    script = '''
+$root = __ROOT__
+if (-not (Test-Path -LiteralPath $root)) { @() | ConvertTo-Json -Depth 5 -Compress; exit 0 }
+$pkgExt = @('.nsp','.nsz','.xci','.xcz','.nro','.bin')
+$rows = @()
+Get-ChildItem -LiteralPath $root -Force | ForEach-Object {
+  $item = $_
+  if ($item.PSIsContainer) {
+    $files = @(Get-ChildItem -LiteralPath $item.FullName -Recurse -File -Force -ErrorAction SilentlyContinue)
+  } else {
+    $files = @($item)
+  }
+  $size = ($files | Measure-Object -Property Length -Sum).Sum
+  if ($null -eq $size) { $size = 0 }
+  $pkgs = @($files | Where-Object { $pkgExt -contains $_.Extension.ToLowerInvariant() })
+  $archives = @($files | Where-Object { $_.Extension.ToLowerInvariant() -eq '.rar' -or $_.Extension.ToLowerInvariant() -match '^\\.r\\d\\d$' })
+  $state = 'exported'
+  if ($pkgs.Count -gt 0) { $state = 'ready_package_found' }
+  elseif ($archives.Count -gt 0) { $state = 'needs_extraction' }
+  $rows += [pscustomobject]@{
+    name = $item.Name
+    path = $item.FullName
+    kind = $(if ($item.PSIsContainer) { 'directory' } else { 'file' })
+    size = [Int64]$size
+    packages = $pkgs.Count
+    archives = $archives.Count
+    state = $state
+    package_paths = @($pkgs | Select-Object -First 20 | ForEach-Object { $_.FullName })
+  }
+}
+$rows | ConvertTo-Json -Depth 5 -Compress
+'''.replace('__ROOT__', ps_single_quote(dest))
+    proc = subprocess.run([*mini_pc_ssh_base(), *powershell_args(script)], capture_output=True, text=True, check=False, timeout=600)
+    if proc.returncode != 0:
+        return {"ok": False, "error": (proc.stderr or proc.stdout or "remote scan failed").strip(), "items": []}
+    raw = (proc.stdout or "[]").strip() or "[]"
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "error": raw[-1000:], "items": []}
+    if isinstance(parsed, dict):
+        items = [parsed]
+    elif isinstance(parsed, list):
+        items = parsed
+    else:
+        items = []
+    local_by_name = {}
+    try:
+        for item in list_files("")["items"]:
+            local_by_name[str(item["name"])] = item
+    except Exception:
+        pass
+    for item in items:
+        size = int(item.get("size") or 0)
+        item["size_human"] = human_size(size)
+        local = local_by_name.get(str(item.get("name") or ""))
+        item["rocky_source_present"] = bool(local)
+        item["rocky_source_size"] = local.get("size") if local else None
+        item["rocky_source_size_human"] = human_size(int(local.get("size") or 0)) if local else "—"
+        item["safe_to_delete_from_rocky"] = bool(local and int(local.get("size") or -1) == size)
+    return {"ok": True, "destination": dest, "items": items}
+
+
+def delete_exported_paths(paths: list[object]) -> dict[str, object]:
+    cfg = load_config()
+    dest = str(cfg.get("destination") or "").strip()
+    if not isinstance(paths, list) or not paths:
+        raise ValueError("paths is required")
+    deleted = []
+    for raw in paths:
+        source = resolve_source(str(raw))
+        remote = windows_join_path(dest, source.name)
+        local_size = directory_size(source) if source.is_dir() else source.stat().st_size
+        remote_size = remote_size_bytes(remote)
+        if local_size != remote_size:
+            raise ValueError(f"refusing to delete {raw}: mini-PC size mismatch local={local_size} remote={remote_size}")
+        if source.is_dir():
+            shutil.rmtree(source)
+        else:
+            source.unlink()
+        deleted.append({"path": str(raw), "local_size": local_size, "remote_path": remote})
+    return {"ok": True, "deleted": deleted, "count": len(deleted)}
 
 
 def status_payload() -> dict[str, object]:
@@ -227,16 +336,23 @@ def make_transfer_command(paths: list[str]) -> list[str]:
 def verify_remote_transfer(job: Job) -> None:
     cfg = load_config()
     dest = str(cfg.get("destination") or "").strip()
-    checks = []
-    for raw in job.paths:
-        source = resolve_source(raw)
-        remote = windows_join_path(dest, source.name)
-        checks.append(f"if (-not (Test-Path -LiteralPath {ps_single_quote(remote)})) {{ Write-Error {ps_single_quote('Missing: ' + remote)}; exit 1 }}")
-    script = "; ".join(checks + ["Write-Output 'ROCKY_TRANSFER_VERIFIED'"] )
-    proc = subprocess.run([*mini_pc_ssh_base(), "powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, check=False, timeout=120)
-    job.verification_stdout = (proc.stdout or "")[-10000:]
-    job.verification_stderr = (proc.stderr or "")[-10000:]
-    job.verified = proc.returncode == 0 and "ROCKY_TRANSFER_VERIFIED" in proc.stdout
+    lines = []
+    try:
+        for raw in job.paths:
+            source = resolve_source(raw)
+            remote = windows_join_path(dest, source.name)
+            local_size = directory_size(source) if source.is_dir() else source.stat().st_size
+            remote_size = remote_size_bytes(remote)
+            lines.append(f"{raw}: local={local_size} remote={remote_size}")
+            if local_size != remote_size:
+                raise ValueError(f"size mismatch for {raw}: local={local_size} remote={remote_size}")
+        job.verification_stdout = "\n".join(lines + ["ROCKY_TRANSFER_VERIFIED"])
+        job.verification_stderr = ""
+        job.verified = True
+    except Exception as exc:
+        job.verification_stdout = "\n".join(lines)
+        job.verification_stderr = str(exc)
+        job.verified = False
 
 
 def run_job(job: Job) -> None:
@@ -350,6 +466,8 @@ class Handler(BaseHTTPRequestHandler):
             elif req.path == "/api/files":
                 q = parse_qs(req.query)
                 self._json(list_files(q.get("path", [""])[0]))
+            elif req.path == "/api/remote-status":
+                self._json(remote_exports_status())
             elif req.path == "/api/jobs":
                 with JOBS_LOCK:
                     jobs = [job_payload(j) for j in JOBS.values()]
@@ -382,6 +500,8 @@ class Handler(BaseHTTPRequestHandler):
             elif req.path == "/api/delete-after-verify":
                 job_id = str(payload.get("job_id") or "").strip()
                 self._json(delete_after_verify(job_id))
+            elif req.path == "/api/delete-exported":
+                self._json(delete_exported_paths(payload.get("paths") or []))
             else:
                 self._error(HTTPStatus.NOT_FOUND, "not found")
         except ValueError as exc:
@@ -407,6 +527,7 @@ class Handler(BaseHTTPRequestHandler):
 <p>Moves selected completed-transfer files/folders from Rocky to the mini-PC over SSH/SCP. Deletion is manual and only enabled after a completed transfer verifies the remote path exists.</p>
 <div class='card'><h2>Status</h2><p class='{'ok' if status['healthy'] else 'bad'}'>{'Healthy' if status['healthy'] else 'Needs check'}</p><ul><li>Mini-PC: {html.escape(str(cfg.get('user')))}@{html.escape(str(cfg.get('host')))}:{html.escape(str(cfg.get('destination')))}</li><li>SSH auth: {'OK' if status['auth_ok'] else 'not ready yet'}</li><li>Transfer root: {html.escape(str(status['transfer_root']))}</li></ul><details><summary>Rocky public key to add to Windows authorized_keys</summary><pre>{html.escape(str(status['public_key']))}</pre></details></div>
 <div class='card'><h2>Config</h2><label>Host <input id='host' value='{html.escape(str(cfg.get('host')))}'></label><label>User <input id='user' value='{html.escape(str(cfg.get('user')))}'></label><label>Dest <input id='dest' value='{html.escape(str(cfg.get('destination')))}'></label><button onclick='saveConfig()'>Save config</button></div>
+<div class='card'><h2>Mini-PC Inbox</h2><p>Shows what already landed on the mini-PC and whether Rocky can safely delete matching local sources.</p><button onclick='loadRemoteStatus()'>Refresh Mini-PC status</button><div id='remote-status'><small>Loading…</small></div></div>
 <div class='card'><h2>Select exports</h2><div class='files'>{rows}</div><button onclick='startTransfer()'>Transfer selected to mini-PC</button><pre id='out'></pre></div>
 <script>
 async function j(url,opts){{const r=await fetch(url,opts); const data=await r.json(); if(!r.ok) throw new Error(data.error||r.statusText); return data}}
@@ -417,6 +538,10 @@ async function startTransfer(){{try{{const paths=[...document.querySelectorAll('
 async function poll(id){{const data=await j('/api/jobs/'+id); lastJobId=id; log(data); if(data.status==='running') setTimeout(()=>poll(id),2000); else if(data.status==='completed' && data.verified && !data.deleted) showDeleteButton(id)}}
 function showDeleteButton(id){{const out=document.getElementById('out'); if(document.getElementById('delete-verified')) return; const btn=document.createElement('button'); btn.id='delete-verified'; btn.textContent='Delete verified transfer from Rocky'; btn.style.background='#ef4444'; btn.onclick=()=>deleteVerified(id); out.parentNode.insertBefore(btn,out.nextSibling)}}
 async function deleteVerified(id){{try{{if(!confirm('Delete the transferred source files/folders from Rocky? This cannot be undone.')) return; const data=await j('/api/delete-after-verify',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{job_id:id}})}}); log(data); location.reload()}}catch(e){{log(e.message)}}}}
+function esc(s){{return String(s??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]))}}
+async function loadRemoteStatus(){{try{{const data=await j('/api/remote-status'); const box=document.getElementById('remote-status'); if(!data.ok){{box.innerHTML='<p class="bad">'+esc(data.error)+'</p>'; return}}; if(!data.items.length){{box.innerHTML='<p>No files/folders found in mini-PC destination yet.</p>'; return}}; box.innerHTML=data.items.map(item=>`<label><input type="checkbox" class="remote-delete" value="${{esc(item.name)}}" ${{item.safe_to_delete_from_rocky?'':'disabled'}}> <strong>${{esc(item.name)}}</strong> <small>${{esc(item.size_human)}} · ${{esc(item.state)}} · packages:${{item.packages}} archives:${{item.archives}} · Rocky source:${{item.rocky_source_present?'present':'gone'}} ${{item.safe_to_delete_from_rocky?'· safe to delete':'· not delete-ready'}}</small></label>`).join('')+'<p><button style="background:#ef4444" onclick="deleteExportedSelected()">Delete checked safe exports from Rocky</button></p>'}}catch(e){{document.getElementById('remote-status').innerHTML='<p class="bad">'+esc(e.message)+'</p>'}}}}
+async function deleteExportedSelected(){{try{{const paths=[...document.querySelectorAll('.remote-delete:checked')].map(x=>x.value); if(!paths.length) throw new Error('Select at least one safe Mini-PC export'); if(!confirm('Delete checked verified exports from Rocky? This cannot be undone.')) return; log(await j('/api/delete-exported',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{paths}})}})); location.reload()}}catch(e){{log(e.message)}}}}
+loadRemoteStatus();
 </script></body></html>"""
         data = body.encode("utf-8")
         self.send_response(HTTPStatus.OK)
