@@ -84,15 +84,34 @@ class SwitchTransferState:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
 
-    def usb_line(self) -> str | None:
+    def usb_devices(self) -> list[dict[str, str]]:
         lsusb = shutil.which("lsusb")
         if not lsusb:
-            return None
+            return []
         result = run_cmd([lsusb], timeout=5)
+        devices: list[dict[str, str]] = []
         for line in result.stdout.splitlines():
-            if SWITCH_USB_ID in line.lower() or "nyx" in line.lower():
-                return line.strip()
+            parts = line.split(None, 6)
+            if len(parts) >= 6 and parts[0] == "Bus" and parts[2] == "Device":
+                devices.append({"bus": parts[1], "device": parts[3].rstrip(":"), "id": parts[5].lower(), "description": parts[6] if len(parts) > 6 else "", "line": line.strip()})
+        return devices
+
+    def usb_line(self) -> str | None:
+        for dev in self.usb_devices():
+            text = (dev.get("id", "") + " " + dev.get("description", "")).lower()
+            if SWITCH_USB_ID in text or "nyx" in text:
+                return dev.get("line")
         return None
+
+    def cyberfoil_usb(self) -> dict[str, Any]:
+        matches = []
+        for dev in self.usb_devices():
+            text = (dev.get("id", "") + " " + dev.get("description", "")).lower()
+            if "057e:3000" in text or "057e:201d" in text or "nintendo" in text or "switch" in text:
+                matches.append(dev)
+        connected = bool(matches)
+        mode = "custom_usb_or_debug" if any(d.get("id") in {"057e:3000", "057e:201d"} for d in matches) else "unknown" if connected else "none"
+        return {"connected": connected, "mode": mode, "devices": matches, "mtp_visible": connected and bool(shutil.which("mtp-detect")) and "057e:3000" not in " ".join(d.get("id", "") for d in matches)}
 
     def switch_mount(self) -> SwitchMount:
         usb = self.usb_line()
@@ -226,6 +245,7 @@ class SwitchTransferState:
                 "udisks_mount": shutil.which("udisksctl") is not None,
                 "udisks_poweroff": shutil.which("udisksctl") is not None,
                 "true_poweroff_available": shutil.which("udisksctl") is not None,
+                "mtp_tools": all(shutil.which(c) is not None for c in ["mtp-detect", "jmtpfs", "fusermount"]),
             },
             "root": str(self.root),
             "root_exists": self.root.exists(),
@@ -234,6 +254,7 @@ class SwitchTransferState:
             "healthy": root_ok,
             "file_count_root": len(files),
             "switch": switch.__dict__,
+            "cyberfoil_usb": self.cyberfoil_usb(),
             "safety": "For homebrew, personal media, saves, patches, and lawful backups only.",
         }
 
@@ -587,7 +608,7 @@ function esc(s){return String(s ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':
 async function j(url, opts){const r=await fetch(url, opts); const data=await r.json(); if(!r.ok) throw new Error(data.error || r.statusText); return data}
 function log(x){document.getElementById('log').textContent = typeof x === 'string' ? x : JSON.stringify(x,null,2)}
 function card(label,value,cls=''){return `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${esc(value)}</div></div>`}
-function renderStatus(s){statusCache=s; const sw=s.switch||{}; const connected=sw.detected; const mounted=!!sw.mount_path; const writable=!!sw.writable; document.getElementById('service-pill').textContent=s.healthy?'service healthy':'service degraded'; document.getElementById('status-grid').innerHTML=[card('Transfer root',s.root),card('Switch USB',connected?'detected':'not detected',connected?'ok':'bad'),card('Mount state',mounted?sw.mount_path:'not mounted',mounted?'ok':'warn'),card('Writable',writable?'yes':'no',writable?'ok':'warn'),card('Switch size',sw.size || (sw.usage&&sw.usage.total_human)),card('Switch free',sw.usage&&sw.usage.free_human)].join(''); document.getElementById('upload-card').classList.toggle('active', writable); document.getElementById('eject-btn').disabled=!connected; document.getElementById('mount-btn').disabled=!(connected && !mounted && sw.partition && s.capabilities && s.capabilities.udisks_mount); document.getElementById('eject-btn').textContent=(s.capabilities&&s.capabilities.true_poweroff_available)?'Sync + Eject Switch':'Sync + Unmount Switch'; document.getElementById('copy-selected-btn').disabled=!(writable && selected.size>0); document.getElementById('notice').textContent = connected ? (mounted ? (writable?'Switch mounted and writable. Copy/upload controls enabled.':'Switch mounted read-only or not writable. Copy/upload disabled.') : 'Nyx USB Disk UMS is detected but no filesystem is mounted yet. Copy/upload disabled until mounted.') : 'No Switch UMS device detected.';}
+function renderStatus(s){statusCache=s; const sw=s.switch||{}; const connected=sw.detected; const mounted=!!sw.mount_path; const writable=!!sw.writable; document.getElementById('service-pill').textContent=s.healthy?'service healthy':'service degraded'; document.getElementById('status-grid').innerHTML=[card('Transfer root',s.root),card('Switch UMS',connected?'detected':'not detected',connected?'ok':'bad'),card('CyberFoil USB',(s.cyberfoil_usb&&s.cyberfoil_usb.connected)?s.cyberfoil_usb.mode:'not detected',(s.cyberfoil_usb&&s.cyberfoil_usb.connected)?'ok':'warn'),card('Mount state',mounted?sw.mount_path:'not mounted',mounted?'ok':'warn'),card('Writable',writable?'yes':'no',writable?'ok':'warn'),card('Switch size',sw.size || (sw.usage&&sw.usage.total_human)),card('Switch free',sw.usage&&sw.usage.free_human)].join(''); document.getElementById('upload-card').classList.toggle('active', writable); document.getElementById('eject-btn').disabled=!connected; document.getElementById('mount-btn').disabled=!(connected && !mounted && sw.partition && s.capabilities && s.capabilities.udisks_mount); document.getElementById('eject-btn').textContent=(s.capabilities&&s.capabilities.true_poweroff_available)?'Sync + Eject Switch':'Sync + Unmount Switch'; document.getElementById('copy-selected-btn').disabled=!(writable && selected.size>0); document.getElementById('notice').textContent = connected ? (mounted ? (writable?'Switch mounted and writable. Copy/upload controls enabled.':'Switch mounted read-only or not writable. Copy/upload disabled.') : 'Nyx USB Disk UMS is detected but no filesystem is mounted yet. Copy/upload disabled until mounted.') : ((s.cyberfoil_usb&&s.cyberfoil_usb.connected)?'CyberFoil/Nintendo USB is connected, but it is not exposed as MTP storage to Rocky. Use NS-USBLoader/compatible sender or switch to Nyx UMS for file browsing.':'No Switch UMS device detected.');}
 function parentPath(){if(!currentPath) return ''; const parts=currentPath.split('/').filter(Boolean); parts.pop(); return parts.join('/')}
 function renderCrumb(){const crumb=document.getElementById('crumb'); const parts=currentPath.split('/').filter(Boolean); let html='<button onclick="openDirRaw(\'\')">Root</button>'; let acc=''; for(const part of parts){acc = acc ? acc + '/' + part : part; html += `<span>/</span><button onclick="openDirRaw('${encodeURIComponent(acc)}')">${esc(part)}</button>`} if(currentPath) html = `<button onclick="openDirRaw('${encodeURIComponent(parentPath())}')">← Back</button>` + html; crumb.innerHTML=html}
 function renderFiles(rows){const box=document.getElementById('files'); renderCrumb(); if(!rows.length){box.innerHTML='<div class="muted">No completed files in this folder.</div>'; return} box.innerHTML=rows.map(f=>{const isDir=f.kind==='directory'; const enc=encodeURIComponent(f.path); const checked=selected.has(f.path)?'checked':''; const sel=selected.has(f.path)?' selected':''; const icon=isDir?'📁':'📄'; const count=isDir && f.child_count!=null ? ` · ${f.child_count} items` : ''; return `<div class="file${sel}"><div class="file-name select-row"><input type="checkbox" ${checked} onchange="toggleSelected('${enc}', this.checked)" /><span>${icon} ${esc(f.name)}</span></div><div class="file-meta">${esc(f.kind)} · ${esc(f.size_human)}${count} · ${esc(f.modified)}</div><div class="actions">${isDir?`<button class="btn" onclick="openDir('${enc}')">Open</button><button class="btn" ${statusCache&&statusCache.switch&&statusCache.switch.writable?'':'disabled'} onclick="copyFile('${enc}')">Copy Folder to Switch</button><button class="btn btn-danger" onclick="deletePath('${enc}')">Delete Folder</button>`:`<a class="btn" href="${f.download_url}">Download</a><button class="btn" ${statusCache&&statusCache.switch&&statusCache.switch.writable?'':'disabled'} onclick="copyFile('${enc}')">Copy to Switch</button><button class="btn btn-danger" onclick="deletePath('${enc}')">Delete File</button>`}</div></div>`}).join(''); if(statusCache) renderStatus(statusCache)}
