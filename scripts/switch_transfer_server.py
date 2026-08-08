@@ -404,8 +404,16 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
         return dest
 
     def copy_source_to_switch(self, src: Path, *, target: str = "", replace: bool = False) -> dict[str, Any]:
-        dest = self.resolve_switch_dest(src.name, target=target)
         kind = "directory" if src.is_dir() else "file"
+        target_root = self.resolve_switch_target_root(target)
+        if src.is_dir() and target_root.name == src.name:
+            # When the selected target is already the same folder, merge into it
+            # instead of creating target/source/source.
+            dest = target_root
+        else:
+            dest = (target_root / src.name).resolve()
+            if target_root not in [dest, *dest.parents]:
+                raise ValueError("destination outside selected Switch target")
         size = directory_size(src) if src.is_dir() else src.stat().st_size
         result = merge_copy(src, dest, replace=replace)
         return {"name": src.name, "kind": kind, "destination": str(dest), "size": size, "size_human": human_size(size), **result}
