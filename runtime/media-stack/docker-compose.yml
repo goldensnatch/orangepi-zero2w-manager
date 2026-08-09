@@ -15,7 +15,7 @@ services:
       - /mnt/rocky-seed/library:/data/media
 
   jellyseerr:
-    image: fallenbagel/jellyseerr:latest
+    image: ghcr.io/fallenbagel/jellyseerr:latest
     container_name: rocky-media-jellyseerr
     restart: unless-stopped
     network_mode: host

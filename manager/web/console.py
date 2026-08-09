@@ -347,6 +347,91 @@ def runtime_status() -> str:
 
 
 
+def local_build_version() -> str:
+
+    explicit = os.environ.get("ROCKY_BUILD_VERSION", "").strip()
+    if explicit:
+        return explicit
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        revision = result.stdout.strip()
+        if revision:
+            return f"rocky@{revision}"
+    except Exception:
+        pass
+    return "rocky@local"
+
+
+
+
+def _image_tag(image_ref: str) -> str | None:
+
+    ref = image_ref.split("@", 1)[0].strip()
+    if not ref:
+        return None
+    last_segment = ref.rsplit("/", 1)[-1]
+    if ":" not in last_segment:
+        return None
+    return last_segment.rsplit(":", 1)[-1].strip() or None
+
+
+
+
+def docker_container_version(container: str) -> str | None:
+
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", container],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        inspected = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(inspected, list) or not inspected:
+        return None
+    attrs = inspected[0] if isinstance(inspected[0], dict) else {}
+    config = attrs.get("Config", {}) if isinstance(attrs, dict) else {}
+    labels = config.get("Labels", {}) if isinstance(config, dict) else {}
+    if isinstance(labels, dict):
+        for key in (
+            "org.opencontainers.image.version",
+            "org.label-schema.version",
+            "build_version",
+            "version",
+        ):
+            value = str(labels.get(key) or "").strip()
+            if value:
+                return value[:24]
+    image_ref = str(config.get("Image") or "").strip() if isinstance(config, dict) else ""
+    tag = _image_tag(image_ref)
+    if tag and tag.lower() != "latest":
+        return tag[:24]
+    image_id = str(attrs.get("Image") or "").strip() if isinstance(attrs, dict) else ""
+    if image_id.startswith("sha256:"):
+        digest = image_id.split(":", 1)[1][:7]
+        if tag:
+            return f"{tag}#{digest}"
+        return f"sha256:{digest}"
+    return tag[:24] if tag else None
+
+
+
+
 
 def runtime_status_payload() -> dict[str, object]:
 
@@ -731,6 +816,29 @@ nav a:hover {{
     text-transform: uppercase;
     color: var(--muted);
     margin-top: 2px;
+}}
+
+.version-pill {{
+    flex-shrink: 0;
+    max-width: 96px;
+    padding: 3px 7px;
+    border-radius: 999px;
+    border: 1px solid rgba(0, 212, 255, 0.24);
+    background: rgba(0, 212, 255, 0.08);
+    color: var(--cyan);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    line-height: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}}
+
+.media-card .version-pill {{
+    border-color: rgba(124, 58, 237, 0.35);
+    background: rgba(124, 58, 237, 0.12);
+    color: #c4b5fd;
 }}
 
 .status-dot {{
@@ -2705,6 +2813,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         active_app = published.get("application", {}).get("active_id") if isinstance(published, dict) else None
         config = network_transfer_runtime.NetworkTransferConfig().snapshot()
         entries: list[dict[str, object]] = []
+        version_cache: dict[str, str | None] = {}
         catalog = ServiceCatalog()
 
         for service in catalog.menu_services():
@@ -2745,12 +2854,19 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     public_url = cached_public or public_url
             if tokenized_url is None and public_url:
                 tokenized_url = self.proxy_public_url(app_id) + f"?access_token={quote(self.build_proxy_token(app_id))}"
+            version = local_build_version()
+            container = str(service.get("docker_container") or "")
+            if container:
+                if container not in version_cache:
+                    version_cache[container] = docker_container_version(container)
+                version = version_cache.get(container) or version
             entries.append({
                 "id": app_id,
                 "name": str(service.get("name", app_id.title())),
                 "description": str(service.get("description", "")),
                 "status": status,
                 "type": service_type,
+                "version": version,
                 "open_url": public_url,
                 "mobile_url": tokenized_url or public_url,
                 "qr_url": self.qr_image_url(tokenized_url or public_url) if (tokenized_url or public_url) else None,
@@ -2767,6 +2883,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 "description": "Gluetun + qBittorrent downloader stack",
                 "status": "running" if transfer_state.get("healthy") else "degraded",
                 "type": "web_interface",
+                "version": local_build_version(),
                 "open_url": tokenized_proxy_url,
                 "mobile_url": tokenized_proxy_url,
                 "qr_url": self.qr_image_url(tokenized_proxy_url),
@@ -2803,12 +2920,16 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             except Exception:
                 status = "unknown"
             public_url = self.publicize_service_url(svc["url"])
+            container = str(svc.get("container") or "")
+            if container and container not in version_cache:
+                version_cache[container] = docker_container_version(container)
             entries.append({
                 "id": svc["id"],
                 "name": svc["name"],
                 "description": svc["description"],
                 "status": status,
                 "type": "background_service",
+                "version": version_cache.get(container) or local_build_version(),
                 "open_url": public_url,
                 "mobile_url": public_url,
                 "qr_url": self.qr_image_url(public_url) if public_url else None,
@@ -2922,6 +3043,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             name = html.escape(str(entry["name"]))
             desc = html.escape(str(entry["description"]))
             etype = html.escape(str(entry["type"]))
+            version = html.escape(str(entry.get("version") or local_build_version()))
             status_raw = str(entry.get("status", "unknown")).lower()
             if status_raw in ("running", "healthy", "up", "ok"):
                 dot_cls = "running"
@@ -2951,6 +3073,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 f'<div class="card-name">{name}</div>'
                 f'<div class="card-type">{etype}</div>'
                 f'</div>'
+                f'<span class="version-pill" title="Version: {version}">{version}</span>'
                 f'<span class="status-dot {dot_cls}" title="{status_label}"></span>'
                 f'</div>'
                 f'<div class="status-row">'
