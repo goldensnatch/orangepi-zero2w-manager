@@ -5,13 +5,16 @@ from __future__ import annotations
 import base64
 from http.cookies import SimpleCookie
 
-import cgi
+from email import policy
+from email.parser import BytesParser
 
 import hashlib
 
 import hmac
 
 import html
+
+import io
 
 import json
 
@@ -1319,6 +1322,81 @@ def recent_audit_events(limit: int = 20) -> list[dict[str, object]]:
         return list(RECENT_AUDIT_EVENTS)[-safe_limit:]
 
 
+class UploadedField:
+    def __init__(self, *, filename: str, data: bytes, content_type: str | None = None) -> None:
+        self.filename = filename
+        self.file = io.BytesIO(data)
+        self.type = content_type or "application/octet-stream"
+        self.value = data
+
+
+class MultipartForm(dict[str, object]):
+    def add(self, name: str, value: object) -> None:
+        existing = self.get(name)
+        if existing is None:
+            self[name] = value
+        elif isinstance(existing, list):
+            existing.append(value)
+        else:
+            self[name] = [existing, value]
+
+    def getfirst(self, name: str, default: str = "") -> str:
+        value = self.get(name, default)
+        if isinstance(value, list):
+            value = value[0] if value else default
+        if isinstance(value, UploadedField):
+            raw = value.value
+            return raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+        return str(value)
+
+
+def parse_multipart_form(rfile, headers, *, max_bytes: int) -> MultipartForm:
+    content_type = headers.get("Content-Type", "")
+    if not content_type:
+        raise ValueError("missing Content-Type")
+    try:
+        length = int(headers.get("Content-Length", "0") or "0")
+    except ValueError as exc:
+        raise ValueError("invalid Content-Length") from exc
+    if length < 0 or length > max_bytes:
+        raise ValueError("invalid upload size")
+
+    body = rfile.read(length)
+    form = MultipartForm()
+    lowered = content_type.lower()
+    if lowered.startswith("application/x-www-form-urlencoded"):
+        for key, values in parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True).items():
+            for value in values:
+                form.add(key, value)
+        return form
+    if not lowered.startswith("multipart/form-data"):
+        raise ValueError("expected multipart/form-data")
+
+    message = BytesParser(policy=policy.default).parsebytes(
+        b"Content-Type: "
+        + content_type.encode("utf-8")
+        + b"\r\nMIME-Version: 1.0\r\n\r\n"
+        + body
+    )
+    if not message.is_multipart():
+        raise ValueError("invalid multipart body")
+
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+        data = part.get_payload(decode=True) or b""
+        filename = part.get_filename()
+        if filename is not None:
+            form.add(name, UploadedField(filename=filename, data=data, content_type=part.get_content_type()))
+        else:
+            charset = part.get_content_charset() or "utf-8"
+            form.add(name, data.decode(charset, errors="replace"))
+    return form
+
+
 class RockyConsoleHandler(BaseHTTPRequestHandler):
 
     server_version = "RockyConsole/0.3"
@@ -1722,20 +1800,14 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         return value
 
-    def parse_upload_form(self) -> tuple[cgi.FieldStorage, cgi.FieldStorage | None]:
-        environ = {
-            "REQUEST_METHOD": "POST",
-            "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-            "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
-        }
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ=environ,
-            keep_blank_values=True,
-        )
+    def parse_upload_form(self) -> tuple[MultipartForm, UploadedField | None]:
+        try:
+            form = parse_multipart_form(self.rfile, self.headers, max_bytes=MAX_REQUEST_BYTES)
+        except ValueError as exc:
+            self.send_json_error(HTTPStatus.BAD_REQUEST, "invalid_upload_form", detail=str(exc))
+            return MultipartForm(), None
         file_field = form["file"] if "file" in form else None
-        return form, file_field
+        return form, file_field if isinstance(file_field, UploadedField) else None
 
     def resolve_workspace_target(
         self,
@@ -2840,7 +2912,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             "prowlarr": "🔎", "jellyseerr": "🎯", "jellyfin": "🎞️", "transfer-stack": "⚡", "torrentz": "⚡", "pihole": "🛡️",
             "3d_printer": "🖨️", "diagnostic": "🔧", "reader": "📖",
             "tesserae": "🖼️", "pikvm": "🖥️", "pwnagotchi": "👾",
-            "ragnar": "🔍", "entertainment": "🎭",
+            "ragnar": "🔍", "entertainment": "🎭", "ns_usbloader": "🔌",
         }
         cards: list[str] = []
         media_cards: list[str] = []

@@ -314,7 +314,7 @@ class TorrentzApp(RockyButtonApp):
             selected = selected or (destinations[0] if destinations and isinstance(destinations[0], dict) else {})
             self._draw_lines(draw, font, "STORAGE", [
                 f"Label: {str(selected.get('label', 'Internal')).upper()}",
-                f"Path: {str(selected.get('path', '/mnt/rocky-transfer'))}",
+                f"Path: {str(selected.get('path', '/mnt/rocky-seed'))}",
                 f"Present: {str(selected.get('present', False)).upper()}",
                 f"Writable: {str(selected.get('writable', False)).upper()}",
                 f"Free: {self._format_bytes(selected.get('available_bytes'))}",

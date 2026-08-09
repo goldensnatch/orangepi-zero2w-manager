@@ -382,7 +382,8 @@
     "url": "http://127.0.0.1:8078/",
     "systemd_service": null,
     "systemd_user_service": "rocky-ns-usbloader.service",
-    "docker_container": null
+    "docker_container": null,
+    "working_directory": "/opt/zero2w-manager"
   },
   "mini_pc_transfer": {
     "background_allowed": true,

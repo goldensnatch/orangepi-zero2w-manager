@@ -1,59 +1,85 @@
 services:
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: rocky-media-jellyfin
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: UTC
+    volumes:
+      - ./jellyfin-config:/config
+      - /mnt/rocky-seed/library/movies:/data/movies
+      - /mnt/rocky-seed/library/tv:/data/tv
+      - /mnt/rocky-seed/library:/data/media
+
+  jellyseerr:
+    image: fallenbagel/jellyseerr:latest
+    container_name: rocky-media-jellyseerr
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: UTC
+    volumes:
+      - ./jellyseerr-config:/config
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: rocky-media-prowlarr
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: UTC
+    volumes:
+      - ./prowlarr-config:/config
+    entrypoint: ["/bin/sh", "-c", "rm -f /config/prowlarr.pid && exec /init"]
+
   radarr:
     image: lscr.io/linuxserver/radarr:latest
     container_name: rocky-media-radarr
-    network_mode: "container:rocky-transfer-gluetun"
     restart: unless-stopped
+    network_mode: host
     environment:
-      PUID: ${PUID}
-      PGID: ${PGID}
-      TZ: ${TZ}
+      PUID: 1000
+      PGID: 1000
+      TZ: UTC
     volumes:
       - ./radarr-config:/config
-      - /mnt/rocky-transfer/complete:/downloads/complete
-      - /mnt/rocky-media/movies:/movies
+      - /mnt/rocky-seed/complete:/downloads/complete
+      - /mnt/rocky-seed/library/movies:/movies
+    entrypoint: ["/bin/sh", "-c", "rm -f /config/radarr.pid && exec /init"]
 
   sonarr:
     image: lscr.io/linuxserver/sonarr:latest
     container_name: rocky-media-sonarr
-    network_mode: "container:rocky-transfer-gluetun"
     restart: unless-stopped
+    network_mode: host
     environment:
-      PUID: ${PUID}
-      PGID: ${PGID}
-      TZ: ${TZ}
+      PUID: 1000
+      PGID: 1000
+      TZ: UTC
     volumes:
       - ./sonarr-config:/config
-      - /mnt/rocky-transfer/complete:/downloads/complete
-      - /mnt/rocky-media/tv:/tv
+      - /mnt/rocky-seed/complete:/downloads/complete
+      - /mnt/rocky-seed/library/tv:/tv
+    entrypoint: ["/bin/sh", "-c", "rm -f /config/sonarr.pid && exec /init"]
 
   bazarr:
     image: lscr.io/linuxserver/bazarr:latest
     container_name: rocky-media-bazarr
-    network_mode: "container:rocky-transfer-gluetun"
     restart: unless-stopped
+    network_mode: host
     environment:
-      PUID: ${PUID}
-      PGID: ${PGID}
-      TZ: ${TZ}
+      PUID: 1000
+      PGID: 1000
+      TZ: UTC
     volumes:
       - ./bazarr-config:/config
-      - /mnt/rocky-media/movies:/movies
-      - /mnt/rocky-media/tv:/tv
-
-  stashapp:
-    image: stashapp/stash:latest
-    container_name: rocky-media-stashapp
-    network_mode: "container:rocky-transfer-gluetun"
-    restart: unless-stopped
-    environment:
-      STASH_STASH: /data
-      STASH_GENERATED: /generated
-      STASH_METADATA: /metadata
-      STASH_CACHE: /cache
-    volumes:
-      - ./stash-config:/root/.stash
-      - /mnt/rocky-media:/data
-      - ./stash-generated:/generated
-      - ./stash-metadata:/metadata
-      - ./stash-cache:/cache
+      - /mnt/rocky-seed/library/movies:/movies
+      - /mnt/rocky-seed/library/tv:/tv
+    entrypoint: ["/bin/sh", "-c", "rm -f /config/bazarr.pid && exec /init"]
