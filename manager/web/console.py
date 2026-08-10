@@ -975,6 +975,15 @@ nav a:hover {{
 .card-status-text.stopped {{ color: var(--red); }}
 .card-status-text.unknown {{ color: var(--muted); }}
 
+.card-version-line {{
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}}
+
 .status-row {{
     display: flex;
     align-items: center;
@@ -3311,7 +3320,11 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             actions_html = ""
             if entry.get("open_url"):
                 safe_url = html.escape(str(entry["open_url"]))
-                actions_html += f'<a href="{safe_url}" target="_blank" rel="noreferrer" class="{launch_cls}">&#x25BA; LAUNCH</a>'
+                if eid == "transfer-stack":
+                    actions_html += f'<a href="{safe_url}" target="_blank" rel="noreferrer" class="{launch_cls}">&#x25BA; LAUNCH</a>'
+                else:
+                    safe_app_id = html.escape(eid)
+                    actions_html += f'<button class="{launch_cls}" data-app-id="{safe_app_id}" data-open-url="{safe_url}" type="button">&#x25BA; LAUNCH</button>'
             if entry.get("qr_url") and entry.get("mobile_url"):
                 safe_qr = html.escape(str(entry["qr_url"]))
                 safe_mob = html.escape(str(entry["mobile_url"]))
@@ -3329,6 +3342,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 f'</div>'
                 f'<div class="status-row">'
                 f'<span class="card-status-text {dot_cls}">{status_label}</span>'
+                f'<span class="card-version-line">APP VERSION {version}</span>'
                 f'</div>'
                 f'<p class="card-desc">{desc}</p>'
                 f'<div class="app-actions">{actions_html}</div>'
