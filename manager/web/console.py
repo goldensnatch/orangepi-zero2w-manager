@@ -21,6 +21,7 @@ import json
 import mimetypes
 
 import os
+import re
 
 import secrets
 
@@ -428,6 +429,100 @@ def docker_container_version(container: str) -> str | None:
             return f"{tag}#{digest}"
         return f"sha256:{digest}"
     return tag[:24] if tag else None
+
+
+
+def _short_version(value: object) -> str | None:
+    text = str(value or "").strip().lstrip("v")
+    if not text:
+        return None
+    match = re.search(r"\d+(?:\.\d+){1,4}(?:[-+][A-Za-z0-9_.-]+)?", text)
+    return (match.group(0) if match else text)[:24]
+
+
+
+def _read_xml_value(path: Path, tag: str) -> str | None:
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(rf"<\s*{re.escape(tag)}\s*>\s*([^<]+?)\s*<\s*/\s*{re.escape(tag)}\s*>", content)
+    return match.group(1).strip() if match else None
+
+
+
+def _read_bazarr_api_key(path: Path) -> str | None:
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"(?im)^\s*(?:apikey|api_key)\s*[:=]\s*['\"]?([^'\"\s#]+)", content)
+    return match.group(1).strip() if match else None
+
+
+
+def _json_get(url: str, *, headers: dict[str, str] | None = None, timeout: float = 1.5) -> dict[str, object] | None:
+    try:
+        request = Request(url, headers=headers or {})
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read(256 * 1024)
+    except (HTTPError, URLError, TimeoutError, OSError):
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8", errors="replace"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+
+def service_reported_version(service_id: str, url: str | None = None) -> str | None:
+    endpoints = {
+        "jellyfin": ("http://127.0.0.1:8096/System/Info/Public", None, ("Version",)),
+        "jellyseerr": ("http://127.0.0.1:5055/api/v1/status", None, ("version",)),
+    }
+    if service_id in endpoints:
+        endpoint, headers, keys = endpoints[service_id]
+        payload = _json_get(endpoint, headers=headers)
+        if payload:
+            for key in keys:
+                version = _short_version(payload.get(key))
+                if version:
+                    return version
+
+    arr_services = {
+        "radarr": (7878, PROJECT_ROOT / "runtime" / "media-stack" / "radarr-config" / "config.xml"),
+        "sonarr": (8989, PROJECT_ROOT / "runtime" / "media-stack" / "sonarr-config" / "config.xml"),
+        "prowlarr": (9696, PROJECT_ROOT / "runtime" / "media-stack" / "prowlarr-config" / "config.xml"),
+    }
+    if service_id in arr_services:
+        port, config_path = arr_services[service_id]
+        api_key = _read_xml_value(config_path, "ApiKey")
+        if api_key:
+            payload = _json_get(f"http://127.0.0.1:{port}/api/v3/system/status?apikey={quote(api_key)}")
+            if payload:
+                return _short_version(payload.get("version"))
+
+    if service_id == "bazarr":
+        for config_path in (
+            PROJECT_ROOT / "runtime" / "media-stack" / "bazarr-config" / "config" / "config.yaml",
+            PROJECT_ROOT / "runtime" / "media-stack" / "bazarr-config" / "config.yaml",
+        ):
+            api_key = _read_bazarr_api_key(config_path)
+            if not api_key:
+                continue
+            for endpoint in (
+                f"http://127.0.0.1:6767/api/system/status?apikey={quote(api_key)}",
+                "http://127.0.0.1:6767/api/system/status",
+            ):
+                headers = {"X-API-KEY": api_key} if endpoint.endswith("/status") else None
+                payload = _json_get(endpoint, headers=headers)
+                if payload:
+                    version = _short_version(payload.get("version") or payload.get("bazarr_version"))
+                    if version:
+                        return version
+
+    return None
 
 
 
@@ -2814,6 +2909,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         config = network_transfer_runtime.NetworkTransferConfig().snapshot()
         entries: list[dict[str, object]] = []
         version_cache: dict[str, str | None] = {}
+        app_version_cache: dict[str, str | None] = {}
         catalog = ServiceCatalog()
 
         for service in catalog.menu_services():
@@ -2855,11 +2951,16 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             if tokenized_url is None and public_url:
                 tokenized_url = self.proxy_public_url(app_id) + f"?access_token={quote(self.build_proxy_token(app_id))}"
             version = local_build_version()
+            if app_id not in app_version_cache:
+                app_version_cache[app_id] = service_reported_version(app_id, str(raw_url) if isinstance(raw_url, str) else None)
+            reported_version = app_version_cache.get(app_id)
+            if reported_version:
+                version = reported_version
             container = str(service.get("docker_container") or "")
             if container:
                 if container not in version_cache:
                     version_cache[container] = docker_container_version(container)
-                version = version_cache.get(container) or version
+                version = reported_version or version_cache.get(container) or version
             entries.append({
                 "id": app_id,
                 "name": str(service.get("name", app_id.title())),
@@ -2923,13 +3024,16 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             container = str(svc.get("container") or "")
             if container and container not in version_cache:
                 version_cache[container] = docker_container_version(container)
+            if svc["id"] not in app_version_cache:
+                app_version_cache[svc["id"]] = service_reported_version(svc["id"], svc["url"])
+            version = app_version_cache.get(svc["id"]) or version_cache.get(container) or local_build_version()
             entries.append({
                 "id": svc["id"],
                 "name": svc["name"],
                 "description": svc["description"],
                 "status": status,
                 "type": "background_service",
-                "version": version_cache.get(container) or local_build_version(),
+                "version": version,
                 "open_url": public_url,
                 "mobile_url": public_url,
                 "qr_url": self.qr_image_url(public_url) if public_url else None,
