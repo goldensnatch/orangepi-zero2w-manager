@@ -2277,6 +2277,12 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             self.handle_update_mode_config(payload)
             return
 
+        if request.path == "/api/apps/launch":
+            payload = self.parse_json_body()
+            if payload is None:
+                return
+            self.handle_app_launch(payload)
+            return
         if request.path == "/api/security/validate":
 
             append_audit_event(
@@ -2898,6 +2904,147 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             return False
         return self.validate_proxy_token(morsel.value, app_id)
 
+    def _tcp_port_open(self, port: int, host: str = "127.0.0.1", timeout: float = 0.8) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def _media_launch_target(self, app_id: str) -> dict[str, object] | None:
+        targets = {
+            "jellyfin": {"compose_service": "jellyfin", "container": "rocky-media-jellyfin", "port": 8096, "url": "http://192.168.1.199:8096/"},
+            "jellyseerr": {"compose_service": "jellyseerr", "container": "rocky-media-jellyseerr", "port": 5055, "url": "http://192.168.1.199:5055/"},
+            "prowlarr": {"compose_service": "prowlarr", "container": "rocky-media-prowlarr", "port": 9696, "url": "http://192.168.1.199:9696/"},
+            "radarr": {"compose_service": "radarr", "container": "rocky-media-radarr", "port": 7878, "url": "http://192.168.1.199:7878/"},
+            "sonarr": {"compose_service": "sonarr", "container": "rocky-media-sonarr", "port": 8989, "url": "http://192.168.1.199:8989/"},
+            "bazarr": {"compose_service": "bazarr", "container": "rocky-media-bazarr", "port": 6767, "url": "http://192.168.1.199:6767/"},
+        }
+        return targets.get(app_id)
+
+    def _docker_status(self, container: str) -> str:
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Status}}", container],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=3,
+            )
+        except Exception:
+            return "unknown"
+        if result.returncode != 0:
+            return "missing"
+        return result.stdout.strip() or "unknown"
+
+    def _start_media_app(self, app_id: str) -> dict[str, object]:
+        target = self._media_launch_target(app_id)
+        if not target:
+            return {"ok": False, "error": "unknown_media_app", "app_id": app_id}
+
+        port = int(target["port"])
+        container = str(target["container"])
+        compose_service = str(target["compose_service"])
+        compose_dir = PROJECT_ROOT / "runtime" / "media-stack"
+        compose_file = compose_dir / "docker-compose.yml"
+
+        if self._tcp_port_open(port):
+            return {"ok": True, "app_id": app_id, "status": "running", "already_running": True, "open_url": target["url"]}
+
+        # Radarr/Sonarr/Bazarr can exit cleanly because stale pid files survive an earlier crash.
+        if compose_dir.exists():
+            try:
+                for pid_file in compose_dir.glob(f"{app_id}-config/*.pid"):
+                    pid_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        started_by = "none"
+        details: list[str] = []
+        if compose_file.is_file():
+            command = ["docker", "compose", "-f", str(compose_file), "up", "-d", compose_service]
+            try:
+                result = subprocess.run(command, cwd=str(compose_dir), capture_output=True, text=True, check=False, timeout=45)
+                started_by = "docker_compose"
+                details.append((result.stdout or result.stderr or "").strip())
+            except Exception as exc:
+                details.append(f"docker compose failed: {exc}")
+        else:
+            try:
+                result = subprocess.run(["docker", "start", container], capture_output=True, text=True, check=False, timeout=20)
+                started_by = "docker_start"
+                details.append((result.stdout or result.stderr or "").strip())
+            except Exception as exc:
+                details.append(f"docker start failed: {exc}")
+
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            if self._tcp_port_open(port):
+                return {
+                    "ok": True,
+                    "app_id": app_id,
+                    "status": "running",
+                    "already_running": False,
+                    "started_by": started_by,
+                    "open_url": target["url"],
+                    "detail": "\n".join(d for d in details if d),
+                }
+            time.sleep(2)
+
+        return {
+            "ok": False,
+            "app_id": app_id,
+            "status": self._docker_status(container),
+            "started_by": started_by,
+            "open_url": target["url"],
+            "error": "service_port_not_ready",
+            "detail": "\n".join(d for d in details if d),
+        }
+
+    def handle_app_launch(self, request: dict[str, object]) -> None:
+        app_id = str(request.get("id") or request.get("app_id") or "").strip()
+        if not app_id:
+            self.send_json_error(HTTPStatus.BAD_REQUEST, "app_id_required")
+            return
+
+        media_target = self._media_launch_target(app_id)
+        if media_target:
+            payload = self._start_media_app(app_id)
+            self.send_json(payload, status=HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_GATEWAY)
+            return
+
+        service = ServiceCatalog().get(app_id)
+        if not service:
+            self.send_json_error(HTTPStatus.NOT_FOUND, "unknown_app", app_id=app_id)
+            return
+
+        unit = str(service.get("systemd_service") or service.get("service") or "").strip()
+        user_unit = str(service.get("systemd_user_service") or "").strip()
+        container = str(service.get("docker_container") or "").strip()
+        raw_url = service.get("url")
+        open_url = self.publicize_service_url(str(raw_url)) if isinstance(raw_url, str) and raw_url else None
+
+        actions: list[str] = []
+        ok = True
+        if unit:
+            result = subprocess.run(["systemctl", "start", unit], capture_output=True, text=True, check=False, timeout=20)
+            ok = ok and result.returncode == 0
+            actions.append((result.stdout or result.stderr or f"systemctl start {unit}: {result.returncode}").strip())
+        elif user_unit:
+            result = subprocess.run(["systemctl", "--user", "start", user_unit], capture_output=True, text=True, check=False, timeout=20)
+            ok = ok and result.returncode == 0
+            actions.append((result.stdout or result.stderr or f"systemctl --user start {user_unit}: {result.returncode}").strip())
+        elif container:
+            status = self._docker_status(container)
+            if status != "running":
+                result = subprocess.run(["docker", "start", container], capture_output=True, text=True, check=False, timeout=20)
+                ok = ok and result.returncode == 0
+                actions.append((result.stdout or result.stderr or f"docker start {container}: {result.returncode}").strip())
+        else:
+            actions.append("no managed service/container for this app; opening URL only")
+
+        self.send_json({"ok": ok, "app_id": app_id, "open_url": open_url, "detail": "\n".join(a for a in actions if a)})
+
     def apps_payload(self) -> dict[str, object]:
 
         runtime = runtime_status_payload()
@@ -3271,6 +3418,35 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 <script>
 const csrfToken = document.querySelector('meta[name="rocky-csrf-token"]').content;
 const feedback = document.getElementById('apps-feedback');
+async function startAndOpenApp(button) {{
+  const appId = button.dataset.appId;
+  const fallbackUrl = button.dataset.openUrl;
+  const oldText = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Starting...';
+  try {{
+    const response = await fetch('/api/apps/launch', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json', 'X-Rocky-CSRF': csrfToken}},
+      body: JSON.stringify({{id: appId}})
+    }});
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) {{
+      throw new Error(payload.error || payload.detail || 'launch_failed');
+    }}
+    const url = payload.open_url || fallbackUrl;
+    if (url) window.open(url, '_blank', 'noreferrer');
+    if (feedback) feedback.textContent = JSON.stringify(payload, null, 2);
+  }} catch (error) {{
+    if (feedback) feedback.textContent = 'Launch failed for ' + appId + ': ' + error;
+  }} finally {{
+    button.disabled = false;
+    button.textContent = oldText;
+  }}
+}}
+document.querySelectorAll('.btn-launch[data-app-id]').forEach((button) => {{
+  button.addEventListener('click', () => startAndOpenApp(button));
+}});
 
 function openQR(src, url) {{
   document.getElementById('qr-modal-img').src = src;
