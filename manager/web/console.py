@@ -33,6 +33,13 @@ import subprocess
 
 import tempfile
 
+try:
+    import grp
+    import pwd
+except ImportError:  # pragma: no cover - Windows/local development only
+    grp = None
+    pwd = None
+
 import threading
 
 import time
@@ -85,6 +92,11 @@ RUNTIME_ROOT = Path("/run/rocky").resolve()
 PROXY_TOKEN_SECRET_PATH = Path("/opt/zero2w-manager/runtime/config/proxy-token-secret")
 MODE_CATALOG_PATH = Path("/opt/zero2w-manager/runtime/config/modes.json")
 CURRENT_MODE_REQUEST_PATH = Path("/opt/zero2w-manager/runtime/config/current-mode.json")
+MODE_CONFIG_OWNER = os.environ.get(
+    "ROCKY_MODE_CONFIG_OWNER",
+    os.environ.get("ROCKY_MODE_CONFIG_USER", "rocky-web"),
+).strip()
+MODE_CONFIG_GROUP = os.environ.get("ROCKY_MODE_CONFIG_GROUP", MODE_CONFIG_OWNER).strip()
 PUBLIC_BASE_URL = os.environ.get("ROCKY_PUBLIC_BASE_URL", "").strip()
 
 WORKSPACE_REGISTRY = WorkspaceRegistry.create_default()
@@ -292,7 +304,80 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def mode_config_owner_ids() -> tuple[int | None, int | None]:
+    uid: int | None = None
+    gid: int | None = None
+    if MODE_CONFIG_OWNER and pwd is not None:
+        try:
+            owner = pwd.getpwnam(MODE_CONFIG_OWNER)
+            uid = owner.pw_uid
+            gid = owner.pw_gid
+        except KeyError:
+            uid = None
+    if MODE_CONFIG_GROUP and grp is not None:
+        try:
+            gid = grp.getgrnam(MODE_CONFIG_GROUP).gr_gid
+        except KeyError:
+            pass
+    return uid, gid
 
+
+def chown_mode_config_path(path: Path) -> None:
+    geteuid = getattr(os, "geteuid", None)
+    if not callable(geteuid) or geteuid() != 0:
+        return
+    uid, gid = mode_config_owner_ids()
+    if uid is None and gid is None:
+        return
+    try:
+        os.chown(path, -1 if uid is None else uid, -1 if gid is None else gid)
+    except OSError:
+        return
+
+
+def write_mode_config_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(mode=0o775, parents=True, exist_ok=True)
+    path.parent.chmod(0o775)
+    chown_mode_config_path(path.parent)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+        text=True,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.chmod(0o664)
+        chown_mode_config_path(temporary_path)
+        os.replace(temporary_path, path)
+        path.chmod(0o664)
+        chown_mode_config_path(path)
+    except Exception:
+        try:
+            temporary_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def ensure_mode_config_files() -> None:
+    path = CURRENT_MODE_REQUEST_PATH
+    path.parent.mkdir(mode=0o775, parents=True, exist_ok=True)
+    path.parent.chmod(0o775)
+    chown_mode_config_path(path.parent)
+    if not path.exists():
+        write_mode_config_json(
+            path,
+            {"version": 1, "selected_mode_id": "safe", "override_flags": {}},
+        )
+    else:
+        path.chmod(0o664)
+        chown_mode_config_path(path)
 
 
 def shell_output(command: list[str], timeout: float = 4.0) -> str:
@@ -528,9 +613,12 @@ def service_reported_version(service_id: str, url: str | None = None) -> str | N
 
 
 
-def runtime_status_payload() -> dict[str, object]:
+def runtime_status_payload(*, detail: str = "summary") -> dict[str, object]:
 
-    return runtime_status_api.build_runtime_status()
+    status = runtime_status_api.build_runtime_status()
+    if detail == "full":
+        return status
+    return runtime_status_api.compact_runtime_status(status)
 
 
 
@@ -2446,7 +2534,17 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
             return
 
-        self.send_json(runtime_status_payload())
+        query = parse_qs(urlparse(self.path).query)
+        detail = str((query.get("detail") or ["summary"])[0]).strip().lower()
+        if detail not in {"summary", "full"}:
+            self.send_json_error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_runtime_status_detail",
+                detail="detail must be summary or full",
+            )
+            return
+
+        self.send_json(runtime_status_payload(detail=detail))
 
 
 
@@ -2544,8 +2642,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         }
 
         try:
-            CURRENT_MODE_REQUEST_PATH.parent.mkdir(mode=0o775, parents=True, exist_ok=True)
-            CURRENT_MODE_REQUEST_PATH.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+            write_mode_config_json(CURRENT_MODE_REQUEST_PATH, updated)
         except OSError as exc:
             self.send_json_error(HTTPStatus.INTERNAL_SERVER_ERROR, "mode_config_write_failed", detail=str(exc))
             return
@@ -2557,6 +2654,24 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             path=self.path,
         )
         self.send_json({"ok": True, "current_mode": updated, "source": str(CURRENT_MODE_REQUEST_PATH)})
+
+    def apply_app_activation_mode(self, service: dict[str, object], app_id: str) -> dict[str, object] | None:
+        target_mode = str(service.get("activate_mode") or "").strip()
+        if not target_mode:
+            return None
+        existing = self.load_current_mode_request_snapshot()
+        current_mode = str(existing.get("selected_mode_id") or "safe")
+        updated = {
+            "version": int(existing.get("version", 1)),
+            "selected_mode_id": target_mode,
+            "previous_mode_id": current_mode,
+            "requested_at": utc_now(),
+            "requested_by": USERNAME,
+            "reason": f"launcher_open:{app_id}",
+            "override_flags": existing.get("override_flags", {}) if isinstance(existing.get("override_flags"), dict) else {},
+        }
+        write_mode_config_json(CURRENT_MODE_REQUEST_PATH, updated)
+        return updated
 
     def handle_api_network_config(self) -> None:
 
@@ -3034,6 +3149,23 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         open_url = self.publicize_service_url(str(raw_url)) if isinstance(raw_url, str) and raw_url else None
 
         actions: list[str] = []
+        mode_request: dict[str, object] | None = None
+        try:
+            mode_request = self.apply_app_activation_mode(service, app_id)
+        except OSError as exc:
+            self.send_json_error(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "mode_activation_failed",
+                app_id=app_id,
+                detail=str(exc),
+                source=str(CURRENT_MODE_REQUEST_PATH),
+            )
+            return
+        if mode_request is not None:
+            actions.append(
+                f"requested mode {mode_request.get('selected_mode_id')} via {CURRENT_MODE_REQUEST_PATH}"
+            )
+
         ok = True
         if unit:
             result = subprocess.run(["systemctl", "start", unit], capture_output=True, text=True, check=False, timeout=20)
@@ -4102,6 +4234,8 @@ def main() -> None:
         )
 
 
+
+    ensure_mode_config_files()
 
     server = ThreadingHTTPServer((HOST, PORT), RockyConsoleHandler)
 
