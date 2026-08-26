@@ -36,7 +36,8 @@ RUNNING = True
 
 def detect_public_host() -> str:
     if PUBLIC_BASE_URL:
-        parsed = urlparse(PUBLIC_BASE_URL)
+        configured = PUBLIC_BASE_URL if "://" in PUBLIC_BASE_URL else f"http://{PUBLIC_BASE_URL}"
+        parsed = urlparse(configured)
         if parsed.hostname:
             return parsed.hostname
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

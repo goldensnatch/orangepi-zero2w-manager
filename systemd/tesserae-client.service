@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/zero2w-manager
+EnvironmentFile=-/etc/rocky-web.env
 Environment=PYTHONPATH=/opt/zero2w-manager
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/zero2w-manager/venv/bin/python3 -m apps.tesserae
