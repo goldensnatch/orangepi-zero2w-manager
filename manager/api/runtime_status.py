@@ -573,6 +573,99 @@ def build_runtime_status(
     }
 
 
+def compact_runtime_status(status: dict[str, Any]) -> dict[str, Any]:
+    """Return the small operator-facing status payload for the web API.
+
+    The full runtime status intentionally keeps noisy diagnostics such as the
+    process table and the complete published state.  The browser/API default is
+    for humans checking Rocky, so keep only the fields that answer "is it up,
+    what mode is it in, where do I click, and what needs attention?".
+    """
+
+    observed = status.get("observed", {})
+    if not isinstance(observed, dict):
+        observed = {}
+
+    published = status.get("published", {})
+    published_state: dict[str, Any] = {}
+    if isinstance(published, dict) and isinstance(published.get("state"), dict):
+        published_state = published["state"]
+
+    network = observed.get("network", {})
+    if not isinstance(network, dict):
+        network = {}
+    interfaces = []
+    for item in network.get("interfaces", []):
+        if not isinstance(item, dict):
+            continue
+        interfaces.append(
+            {
+                "name": item.get("name"),
+                "kind": item.get("kind"),
+                "ipv4": item.get("ipv4"),
+                "active": item.get("active"),
+                "signal_dbm": item.get("signal_dbm"),
+            }
+        )
+
+    web_services = published_state.get("web_services", {})
+    compact_services: dict[str, Any] = {}
+    if isinstance(web_services, dict):
+        for service_id, service in sorted(web_services.items()):
+            if not isinstance(service, dict):
+                continue
+            compact_services[str(service_id)] = {
+                "active": service.get("active"),
+                "available": service.get("available"),
+                "url": service.get("url"),
+                "proxy_available": bool(service.get("tokenized_proxy_url")),
+            }
+
+    docker = observed.get("docker", {})
+    if not isinstance(docker, dict):
+        docker = {}
+    docker_items = []
+    for item in docker.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        docker_items.append(
+            {
+                "name": item.get("name"),
+                "status": item.get("status"),
+                "running": item.get("running"),
+                "healthy": item.get("healthy"),
+            }
+        )
+
+    return {
+        "schema_version": status.get("schema_version", 1),
+        "generated_at": status.get("generated_at"),
+        "healthy": status.get("healthy"),
+        "service": observed.get("service", {}),
+        "system": observed.get("system", {}),
+        "network": {
+            "primary": network.get("primary"),
+            "header_token": network.get("header_token"),
+            "interfaces": interfaces,
+        },
+        "mode": published_state.get("mode", {}),
+        "runtime": published_state.get("runtime", {}),
+        "display": published_state.get("display", {}),
+        "buttons": published_state.get("buttons") or observed.get("buttons", {}),
+        "storage": published_state.get("storage", {}),
+        "transfer": published_state.get("transfer", {}),
+        "web_services": compact_services,
+        "docker": {
+            "count": docker.get("count"),
+            "running": docker.get("running"),
+            "items": docker_items,
+        },
+        "applications": observed.get("applications", {}),
+        "warnings": status.get("warnings", []),
+        "diagnostics_url": "/api/runtime/status?detail=full",
+    }
+
+
 def format_duration(
     seconds: float | int | None,
 ) -> str:
