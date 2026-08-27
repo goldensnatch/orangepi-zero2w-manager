@@ -445,6 +445,33 @@ class SwitchTransferState:
             "safety": "For homebrew, personal media, saves, patches, and lawful backups only.",
         }
 
+    def workflow_status(self) -> dict[str, Any]:
+        switch = self.status()
+        ns_usbloader = fetch_local_json(8078, "/api/status")
+        mini_pc = fetch_local_json(8079, "/api/status")
+        mini_remote = fetch_local_json(8079, "/api/remote-status")
+        sw = switch.get("switch") or {}
+        mtp = switch.get("mtp") or {}
+        routes = [
+            {"id": "ums_sd_copy", "label": "Nyx/Hekate UMS SD copy", "available": bool(sw.get("writable")), "status": "ready" if sw.get("writable") else "waiting_for_mounted_writable_ums", "note": "Best for browsing/copying files directly onto the mounted Switch SD card."},
+            {"id": "mtp_browser", "label": "DBI/CyberFoil MTP browser", "available": bool(mtp.get("mounted") and mtp.get("writable")), "status": "ready" if mtp.get("mounted") and mtp.get("writable") else "not_mtp_visible_or_not_mounted", "note": "Only works when the Switch app exposes a real libmtp-compatible MTP device."},
+            {"id": "ns_usbloader", "label": "NS-USBLoader installer USB", "available": bool(ns_usbloader.get("healthy") and ns_usbloader.get("jar_exists") and ns_usbloader.get("switch_usb_detected")), "status": "ready" if ns_usbloader.get("switch_usb_detected") else "waiting_for_switch_installer_usb", "note": "Use for compatible installer USB protocols; package-like files only, not raw archive parts."},
+            {"id": "mini_pc_export", "label": "Mini-PC export / prepare on Windows", "available": bool(mini_pc.get("auth_ok")), "status": "ready" if mini_pc.get("auth_ok") else "ssh_not_ready", "note": "Best for large archive sets: export from Rocky, extract on Windows, then deliver by USB/installer path."},
+        ]
+        if sw.get("writable"):
+            recommended = "ums_sd_copy"
+            summary = "Switch SD is mounted and writable; copy/browse via UMS is the cleanest current path."
+        elif ns_usbloader.get("switch_usb_detected"):
+            recommended = "ns_usbloader"
+            summary = "Installer USB is visible; use NS-USBLoader for supported package files."
+        elif mini_pc.get("auth_ok"):
+            recommended = "mini_pc_export"
+            summary = "Mini-PC export is ready; move large sets off Rocky before preparing delivery."
+        else:
+            recommended = "prepare_route"
+            summary = "No delivery route is ready yet; mount UMS, expose installer USB, or finish Mini-PC SSH setup."
+        return {"ok": True, "summary": summary, "recommended": recommended, "routes": routes, "switch_transfer": switch, "ns_usbloader": ns_usbloader, "mini_pc_transfer": mini_pc, "mini_pc_remote": mini_remote}
+
 
 
 def merge_copy(src: Path, dest: Path, *, replace: bool, job: TransferJob | None = None) -> dict[str, Any]:
