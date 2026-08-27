@@ -15,6 +15,8 @@ import time
 import threading
 import uuid
 import urllib.parse
+import urllib.request
+import urllib.error
 from urllib.parse import parse_qs
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -131,6 +133,20 @@ def directory_size(path: Path) -> int:
             continue
     return total
 
+
+
+def fetch_local_json(port: int, path: str, *, timeout: float = 1.5) -> dict[str, Any]:
+    url = f"http://127.0.0.1:{port}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = response.read(256 * 1024)
+        data = json.loads(body.decode("utf-8", errors="replace") or "{}")
+        if isinstance(data, dict):
+            data.setdefault("reachable", True)
+            return data
+        return {"reachable": True, "value": data}
+    except Exception as exc:
+        return {"reachable": False, "healthy": False, "error": str(exc)}
 
 def flatten_mounts(node: dict[str, Any]) -> list[dict[str, Any]]:
     rows = [node]
@@ -517,6 +533,8 @@ class SwitchTransferHandler(BaseHTTPRequestHandler):
             self.send_html()
         elif path == "/__health" or path == "/api/status":
             self.send_json(self.state.status())
+        elif path == "/api/workflow/status":
+            self.send_json(self.state.workflow_status())
         elif path == "/api/files":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
@@ -882,6 +900,7 @@ HTML = r'''<!doctype html>
 <section class="hero"><div><div class="kicker">Rocky Control Plane</div><div class="title">Switch Transfer</div><div class="subtitle">Polished LAN transfer surface rooted at completed Rocky downloads. For homebrew, personal media, saves, patches, and lawful backups only.</div></div><div class="pill" id="service-pill">loading…</div></section>
 <section class="grid" id="status-grid"></section>
 <div class="notice" id="notice"></div>
+<section class="card"><div class="label">Suggested workflow</div><div id="workflow-summary" class="value">Loading...</div><div id="workflow-routes" class="muted"></div><div class="toolbar"><a class="btn" href="/api/workflow/status">Workflow JSON</a><a class="btn" href="http://" id="ns-link">NS-USBLoader :8078</a><a class="btn" href="http://" id="mini-link">Mini-PC Transfer :8079</a></div></section>
 <section class="card"><div class="label">Switch Copy Target</div><div class="toolbar"><select id="target-select"></select><input id="target-input" placeholder="Custom target folder, e.g. switch" /><label class="muted"><input type="checkbox" id="replace-existing" /> Replace existing files</label><button class="btn" onclick="applyTargetInput()">Use Target</button></div><div class="muted" id="target-note">Target: /</div></section>
 <section class="card upload" id="upload-card"><div class="label">Upload to Switch</div><form id="upload-form"><input name="file" type="file" required /> <button class="btn" type="submit">Upload</button></form></section>
 <section class="toolbar"><button class="btn" onclick="loadAll()">Refresh</button><button class="btn" id="mount-btn" onclick="mountSwitch()">Mount Switch UMS</button><button class="btn" onclick="mountMtp()">Mount MTP</button><button class="btn" onclick="unmountMtp()">Unmount MTP</button><button class="btn" id="copy-selected-btn" onclick="copySelected()">Copy Selected to Switch</button><button class="btn" onclick="clearSelection()">Clear Selection</button><button class="btn btn-danger" id="eject-btn" onclick="ejectSwitch()">Sync + Eject Switch</button><a class="btn" href="/__health">Health JSON</a><a class="btn" href="/api/status">Status JSON</a></section>
@@ -896,6 +915,7 @@ function esc(s){return String(s ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':
 async function j(url, opts){const r=await fetch(url, opts); const data=await r.json(); if(!r.ok) throw new Error(data.error || r.statusText); return data}
 function log(x){document.getElementById('log').textContent = typeof x === 'string' ? x : JSON.stringify(x,null,2)}
 function card(label,value,cls=''){return `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${esc(value)}</div></div>`}
+function renderWorkflow(w){document.getElementById('workflow-summary').textContent=w.summary||'No workflow status yet'; const rows=(w.routes||[]).map(r=>`${r.available?'✅':'⏳'} ${r.label}: ${r.status} — ${r.note}`); document.getElementById('workflow-routes').innerHTML=rows.map(esc).join('<br>'); const host=location.hostname; document.getElementById('ns-link').href=`http://${host}:8078/`; document.getElementById('mini-link').href=`http://${host}:8079/`; }
 function renderStatus(s){statusCache=s; const sw=s.switch||{}; const mtp=s.mtp||{}; const connected=sw.detected; const mounted=!!sw.mount_path; const writable=!!sw.writable; document.getElementById('service-pill').textContent=s.healthy?'service healthy':'service degraded'; document.getElementById('status-grid').innerHTML=[card('Transfer root',s.root),card('Switch UMS',connected?'detected':'not detected',connected?'ok':'bad'),card('CyberFoil USB',(s.cyberfoil_usb&&s.cyberfoil_usb.connected)?s.cyberfoil_usb.mode:'not detected',(s.cyberfoil_usb&&s.cyberfoil_usb.connected)?'ok':'warn'),card('MTP raw device',mtp.raw_device_visible?'visible':'not visible',mtp.raw_device_visible?'ok':'warn'),card('MTP mount',mtp.mounted?mtp.mount_path:'not mounted',mtp.mounted?'ok':'warn'),card('Mount state',mounted?sw.mount_path:'not mounted',mounted?'ok':'warn'),card('Writable',writable?'yes':'no',writable?'ok':'warn'),card('Switch size',sw.size || (sw.usage&&sw.usage.total_human)),card('Switch free',sw.usage&&sw.usage.free_human)].join(''); document.getElementById('upload-card').classList.toggle('active', writable); document.getElementById('eject-btn').disabled=!connected; document.getElementById('mount-btn').disabled=!(connected && !mounted && sw.partition && s.capabilities && s.capabilities.udisks_mount); document.getElementById('eject-btn').textContent=(s.capabilities&&s.capabilities.true_poweroff_available)?'Sync + Eject Switch':'Sync + Unmount Switch'; document.getElementById('copy-selected-btn').disabled=!(writable && selected.size>0); document.getElementById('notice').textContent = connected ? (mounted ? (writable?'Switch mounted and writable. Copy/upload controls enabled.':'Switch mounted read-only or not writable. Copy/upload disabled.') : 'Nyx USB Disk UMS is detected but no filesystem is mounted yet. Copy/upload disabled until mounted.') : ((s.cyberfoil_usb&&s.cyberfoil_usb.connected)?'CyberFoil/Nintendo USB is connected, but it is not exposed as MTP storage to Rocky. Use NS-USBLoader/compatible sender or switch to Nyx UMS for file browsing.':'No Switch UMS device detected.');}
 function parentPath(){if(!currentPath) return ''; const parts=currentPath.split('/').filter(Boolean); parts.pop(); return parts.join('/')}
 function renderCrumb(){const crumb=document.getElementById('crumb'); const parts=currentPath.split('/').filter(Boolean); let html='<button onclick="openDirRaw(\'\')">Root</button>'; let acc=''; for(const part of parts){acc = acc ? acc + '/' + part : part; html += `<span>/</span><button onclick="openDirRaw('${encodeURIComponent(acc)}')">${esc(part)}</button>`} if(currentPath) html = `<button onclick="openDirRaw('${encodeURIComponent(parentPath())}')">← Back</button>` + html; crumb.innerHTML=html}
@@ -906,7 +926,7 @@ function renderSwitchFiles(rows){const box=document.getElementById('switch-files
 function setCopyTarget(t){copyTarget=(t||'').replace(/^\/+|\/+$/g,''); document.getElementById('target-input').value=copyTarget; document.getElementById('target-note').textContent='Target: /' + copyTarget}
 function applyTargetInput(){setCopyTarget(document.getElementById('target-input').value)}
 async function loadTargets(){try{const data=await j('/api/common-targets'); const sel=document.getElementById('target-select'); sel.innerHTML=data.targets.map(t=>`<option value="${esc(t.path)}">${esc(t.label)}</option>`).join(''); sel.onchange=()=>setCopyTarget(sel.value); if(!copyTarget && data.targets.length) setCopyTarget(data.targets[0].path)}catch(e){document.getElementById('target-select').innerHTML='<option value="">/</option>';}}
-async function loadAll(){try{await loadTargets(); const s=await j('/api/status'); renderStatus(s); const files=await j('/api/files?path='+encodeURIComponent(currentPath)); renderFiles(files.files); try{const sf=await j('/api/switch-files?path='+encodeURIComponent(switchPath)); renderSwitchFiles(sf.files)}catch(err){document.getElementById('switch-files').innerHTML='<div class="muted">'+esc(err.message)+'</div>'; renderSwitchCrumb()} try{const mf=await j('/api/mtp/files'); document.getElementById('mtp-files').innerHTML=mf.files.map(f=>`<div class="file"><div class="file-name">${f.kind==='directory'?'📁':'📄'} ${esc(f.name)}</div><div class="file-meta">${esc(f.kind)} · ${esc(f.size_human)} · ${esc(f.modified)}</div></div>`).join('')||'<div class="muted">MTP mounted but empty.</div>'}catch(err){document.getElementById('mtp-files').innerHTML='<div class="muted">'+esc(err.message)+'</div>'} log('Ready')}catch(e){log(e.message)}}
+async function loadAll(){try{await loadTargets(); try{renderWorkflow(await j('/api/workflow/status'))}catch(err){document.getElementById('workflow-summary').textContent=err.message} const s=await j('/api/status'); renderStatus(s); const files=await j('/api/files?path='+encodeURIComponent(currentPath)); renderFiles(files.files); try{const sf=await j('/api/switch-files?path='+encodeURIComponent(switchPath)); renderSwitchFiles(sf.files)}catch(err){document.getElementById('switch-files').innerHTML='<div class="muted">'+esc(err.message)+'</div>'; renderSwitchCrumb()} try{const mf=await j('/api/mtp/files'); document.getElementById('mtp-files').innerHTML=mf.files.map(f=>`<div class="file"><div class="file-name">${f.kind==='directory'?'📁':'📄'} ${esc(f.name)}</div><div class="file-meta">${esc(f.kind)} · ${esc(f.size_human)} · ${esc(f.modified)}</div></div>`).join('')||'<div class="muted">MTP mounted but empty.</div>'}catch(err){document.getElementById('mtp-files').innerHTML='<div class="muted">'+esc(err.message)+'</div>'} log('Ready')}catch(e){log(e.message)}}
 function openDir(p){currentPath=decodeURIComponent(p); selected.clear(); loadAll()}
 function openDirRaw(p){currentPath=decodeURIComponent(p); selected.clear(); loadAll()}
 function openSwitchDir(p){switchPath=decodeURIComponent(p); loadAll()}
