@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
+
+from manager.runtime.media_stack import media_app_ids
 
 
 HOP_BY_HOP_HEADERS = {
@@ -23,6 +25,62 @@ _ROOT_ATTR_RE = re.compile(
     re.IGNORECASE,
 )
 _URL_FUNC_RE = re.compile(r"url\(/((?!proxy/))", re.IGNORECASE)
+_QUOTED_ROOT_RE = re.compile(
+    r'(?P<quote>["\'])/(?!/)(?!proxy/)(?P<path>[^"\']*)(?P=quote)'
+)
+_ROCKY_COOKIE_PREFIXES = ("rocky_session", "rocky_proxy_")
+
+
+def public_proxy_app_ids() -> frozenset[str]:
+    return frozenset(media_app_ids()) | {"transfer-stack"}
+
+
+def is_public_proxy_app(app_id: str) -> bool:
+    return str(app_id or "") in public_proxy_app_ids()
+
+
+def proxy_app_id_from_path(path: str) -> str | None:
+    parts = [part for part in str(path or "").split("/") if part]
+    if len(parts) >= 2 and parts[0] == "proxy" and parts[1]:
+        return parts[1]
+    return None
+
+
+def proxied_app_login_location(
+    *,
+    next_path: str = "",
+    referer: str = "",
+    request_query: str = "",
+) -> str | None:
+    """Map a Rocky /login hit back to the entertainment app that owns it."""
+    candidate = str(next_path or "").strip()
+    if candidate.startswith("/proxy/"):
+        return candidate
+    app_id = proxy_app_id_from_path(urlparse(referer or "").path)
+    if not app_id or not is_public_proxy_app(app_id):
+        return None
+    pairs = [
+        (key, value)
+        for key, value in parse_qsl(str(request_query or ""), keep_blank_values=True)
+        if key != "next"
+    ]
+    location = f"{proxy_prefix(app_id)}/login"
+    if pairs:
+        location += "?" + urlencode(pairs, doseq=True)
+    return location
+
+
+def filter_browser_cookies_for_upstream(cookie_header: str) -> str:
+    kept: list[str] = []
+    for part in str(cookie_header or "").split(";"):
+        item = part.strip()
+        if not item:
+            continue
+        name = item.split("=", 1)[0].strip()
+        if name == "rocky_session" or name.startswith(_ROCKY_COOKIE_PREFIXES[1]):
+            continue
+        kept.append(item)
+    return "; ".join(kept)
 
 
 def proxy_prefix(app_id: str) -> str:
@@ -85,6 +143,7 @@ def rewrite_html_root_paths(payload: bytes, app_id: str, content_type: str) -> b
         text = payload.decode("latin-1")
     text = _ROOT_ATTR_RE.sub(rf"\g<attr>{prefix}/\g<path>", text)
     text = _URL_FUNC_RE.sub(rf"url({prefix}/", text)
+    text = _QUOTED_ROOT_RE.sub(rf"\g<quote>{prefix}/\g<path>\g<quote>", text)
     return text.encode("utf-8")
 
 

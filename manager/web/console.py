@@ -48,7 +48,14 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from manager.api import runtime_status as runtime_status_api
 from manager.runtime import network_transfer as network_transfer_runtime
-from manager.runtime.app_proxy import rewrite_html_root_paths, rewrite_upstream_headers
+from manager.runtime.app_proxy import (
+    filter_browser_cookies_for_upstream,
+    is_public_proxy_app,
+    proxied_app_login_location,
+    proxy_app_id_from_path,
+    rewrite_html_root_paths,
+    rewrite_upstream_headers,
+)
 from manager.runtime.service_catalog import ServiceCatalog
 from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids, media_launch_target
 from manager.runtime.proxy_tokens import (
@@ -1884,16 +1891,19 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
 
 
+    def _send_redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self._send_security_headers()
+        self.end_headers()
+
     def require_authentication(self) -> bool:
         if self.authenticated():
             return True
         if self._wants_html():
             next_path = _safe_next_path(self.path)
-            self.send_response(HTTPStatus.FOUND)
-            self.send_header("Location", f"/login?next={quote(next_path)}")
-            self.send_header("Content-Length", "0")
-            self._send_security_headers()
-            self.end_headers()
+            self._send_redirect(f"/login?next={quote(next_path)}")
             return False
         payload = b"Authentication required.\n"
         self.send_response(HTTPStatus.UNAUTHORIZED)
@@ -1907,8 +1917,16 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
     def handle_login_page(self, *, error: str | None = None, next_path: str | None = None) -> None:
         request = urlparse(self.path)
         if next_path is None:
-            next_path = parse_qs(request.query).get("next", ["/apps"])[0]
-        next_path = _safe_next_path(str(next_path))
+            next_path = parse_qs(request.query).get("next", [""])[0]
+        passthrough = proxied_app_login_location(
+            next_path=_safe_next_path(str(next_path)) if next_path else "",
+            referer=self.headers.get("Referer", ""),
+            request_query=request.query,
+        )
+        if passthrough:
+            self._send_redirect(passthrough)
+            return
+        next_path = _safe_next_path(str(next_path) or "/apps")
         error_html = (
             f'<p class="card-status-text stopped">{html.escape(error)}</p>'
             if error
@@ -2416,6 +2434,11 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             return
 
         if request.path == "/login":
+            referer_app = proxy_app_id_from_path(urlparse(self.headers.get("Referer", "")).path)
+            if referer_app and is_public_proxy_app(referer_app):
+                proxied_path = self.path.replace("/login", f"/proxy/{referer_app}/login", 1)
+                self.handle_proxy(urlparse(proxied_path), method="POST")
+                return
             self.handle_login_submit()
             return
 
@@ -3452,16 +3475,15 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         proxy_path = request.path[len("/proxy/"):]
         app_id, _, remainder = proxy_path.partition("/")
-        if not (self.authenticated() or self.token_authorized_proxy(request, app_id)):
-            if self._wants_html():
-                next_path = _safe_next_path(self.path)
-                self.send_response(HTTPStatus.FOUND)
-                self.send_header("Location", f"/login?next={quote(next_path)}")
-                self.send_header("Content-Length", "0")
-                self._send_security_headers()
-                self.end_headers()
-                return
-            self.require_authentication()
+        token_ok = self.token_authorized_proxy(request, app_id)
+        if not is_public_proxy_app(app_id) and not (self.authenticated() or token_ok):
+            payload = b"Authentication required.\n"
+            self.send_response(HTTPStatus.UNAUTHORIZED)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self._send_security_headers()
+            self.end_headers()
+            self.wfile.write(payload)
             return
         extra_headers: dict[str, str] = {}
         supplied_token = parse_qs(request.query).get("access_token", [""])[0]
@@ -3493,10 +3515,13 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         upstream = urlparse(base)
         host_override = upstream.netloc
         proxy_request = Request(target, data=body, method=method)
-        for header_name in ("Content-Type", "Cookie", "User-Agent"):
+        for header_name in ("Content-Type", "User-Agent"):
             header_value = self.headers.get(header_name)
             if header_value:
                 proxy_request.add_header(header_name, header_value)
+        cookie_header = filter_browser_cookies_for_upstream(self.headers.get("Cookie", ""))
+        if cookie_header:
+            proxy_request.add_header("Cookie", cookie_header)
         proxy_request.add_header("Host", host_override)
         proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
         proxy_request.add_header("X-Forwarded-Proto", "http")

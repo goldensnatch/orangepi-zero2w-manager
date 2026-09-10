@@ -94,6 +94,61 @@ class MediaStackTests(unittest.TestCase):
         )
         self.assertIn(b'action="/proxy/prowlarr/login"', html)
         self.assertIn(b'href="/proxy/prowlarr/Content/logo.svg"', html)
+        js_html = rewrite_html_root_paths(
+            b'<script>window.location="/login?returnUrl=%2F"</script>',
+            "radarr",
+            "text/html",
+        )
+        self.assertIn(b'window.location="/proxy/radarr/login?returnUrl=%2F"', js_html)
+
+    def test_entertainment_proxy_skips_rocky_login(self) -> None:
+        from manager.runtime.app_proxy import (
+            filter_browser_cookies_for_upstream,
+            is_public_proxy_app,
+            proxied_app_login_location,
+            public_proxy_app_ids,
+        )
+
+        self.assertTrue(is_public_proxy_app("jellyfin"))
+        self.assertTrue(is_public_proxy_app("transfer-stack"))
+        self.assertFalse(is_public_proxy_app("pikvm"))
+        self.assertEqual(
+            public_proxy_app_ids(),
+            frozenset(MEDIA_STACK_APPS) | {"transfer-stack"},
+        )
+        self.assertEqual(
+            proxied_app_login_location(
+                next_path="/proxy/jellyfin/?access_token=abc.def",
+                referer="",
+                request_query="next=%2Fproxy%2Fjellyfin%2F",
+            ),
+            "/proxy/jellyfin/?access_token=abc.def",
+        )
+        self.assertEqual(
+            proxied_app_login_location(
+                next_path="/apps",
+                referer="http://192.168.1.216:8090/proxy/prowlarr/",
+                request_query="returnUrl=%2F",
+            ),
+            "/proxy/prowlarr/login?returnUrl=%2F",
+        )
+        self.assertIsNone(
+            proxied_app_login_location(
+                next_path="/apps",
+                referer="http://192.168.1.216:8090/apps",
+                request_query="",
+            )
+        )
+        self.assertEqual(
+            filter_browser_cookies_for_upstream(
+                "rocky_session=abc; arr=xyz; rocky_proxy_prowlarr=tok"
+            ),
+            "arr=xyz",
+        )
+        source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
+        proxy_fn = source.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
+        self.assertIn("is_public_proxy_app(app_id)", proxy_fn)
+        self.assertNotIn("/login?next=", proxy_fn)
 
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
