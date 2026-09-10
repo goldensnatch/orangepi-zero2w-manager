@@ -62,6 +62,7 @@ from urllib.request import Request, urlopen
 from manager.api import runtime_status as runtime_status_api
 from manager.runtime import network_transfer as network_transfer_runtime
 from manager.runtime.service_catalog import ServiceCatalog
+from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids, media_launch_target
 from manager.runtime.workspace import (
 
     WorkspaceError,
@@ -3036,15 +3037,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             return False
 
     def _media_launch_target(self, app_id: str) -> dict[str, object] | None:
-        targets = {
-            "jellyfin": {"compose_service": "jellyfin", "container": "rocky-media-jellyfin", "port": 8096, "url": "http://192.168.1.199:8096/"},
-            "jellyseerr": {"compose_service": "jellyseerr", "container": "rocky-media-jellyseerr", "port": 5055, "url": "http://192.168.1.199:5055/"},
-            "prowlarr": {"compose_service": "prowlarr", "container": "rocky-media-prowlarr", "port": 9696, "url": "http://192.168.1.199:9696/"},
-            "radarr": {"compose_service": "radarr", "container": "rocky-media-radarr", "port": 7878, "url": "http://192.168.1.199:7878/"},
-            "sonarr": {"compose_service": "sonarr", "container": "rocky-media-sonarr", "port": 8989, "url": "http://192.168.1.199:8989/"},
-            "bazarr": {"compose_service": "bazarr", "container": "rocky-media-bazarr", "port": 6767, "url": "http://192.168.1.199:6767/"},
-        }
-        return targets.get(app_id)
+        return media_launch_target(app_id)
+
+    def _tokenized_media_url(self, app_id: str) -> str:
+        return self.proxy_public_url(app_id) + f"?access_token={quote(self.build_proxy_token(app_id))}"
 
     def _docker_status(self, container: str) -> str:
         try:
@@ -3071,14 +3067,15 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         compose_service = str(target["compose_service"])
         compose_dir = PROJECT_ROOT / "runtime" / "media-stack"
         compose_file = compose_dir / "docker-compose.yml"
+        open_url = self._tokenized_media_url(app_id)
 
         if self._tcp_port_open(port):
-            return {"ok": True, "app_id": app_id, "status": "running", "already_running": True, "open_url": target["url"]}
+            return {"ok": True, "app_id": app_id, "status": "running", "already_running": True, "open_url": open_url}
 
         # Radarr/Sonarr/Bazarr can exit cleanly because stale pid files survive an earlier crash.
         if compose_dir.exists():
             try:
-                for pid_file in compose_dir.glob(f"{app_id}-config/*.pid"):
+                for pid_file in compose_dir.glob(f"{app_id}-config/**/*.pid"):
                     pid_file.unlink(missing_ok=True)
             except OSError:
                 pass
@@ -3091,6 +3088,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 result = subprocess.run(command, cwd=str(compose_dir), capture_output=True, text=True, check=False, timeout=45)
                 started_by = "docker_compose"
                 details.append((result.stdout or result.stderr or "").strip())
+                if result.returncode != 0:
+                    started_by = "docker_compose_failed"
             except Exception as exc:
                 details.append(f"docker compose failed: {exc}")
         else:
@@ -3098,10 +3097,12 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 result = subprocess.run(["docker", "start", container], capture_output=True, text=True, check=False, timeout=20)
                 started_by = "docker_start"
                 details.append((result.stdout or result.stderr or "").strip())
+                if result.returncode != 0:
+                    started_by = "docker_start_failed"
             except Exception as exc:
                 details.append(f"docker start failed: {exc}")
 
-        deadline = time.time() + 90
+        deadline = time.time() + 12
         while time.time() < deadline:
             if self._tcp_port_open(port):
                 return {
@@ -3110,17 +3111,28 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     "status": "running",
                     "already_running": False,
                     "started_by": started_by,
-                    "open_url": target["url"],
+                    "open_url": open_url,
                     "detail": "\n".join(d for d in details if d),
                 }
-            time.sleep(2)
+            time.sleep(1)
+
+        if started_by in {"docker_compose", "docker_start"}:
+            return {
+                "ok": True,
+                "app_id": app_id,
+                "status": "starting",
+                "already_running": False,
+                "started_by": started_by,
+                "open_url": open_url,
+                "detail": "\n".join(d for d in details if d),
+            }
 
         return {
             "ok": False,
             "app_id": app_id,
             "status": self._docker_status(container),
             "started_by": started_by,
-            "open_url": target["url"],
+            "open_url": open_url,
             "error": "service_port_not_ready",
             "detail": "\n".join(d for d in details if d),
         }
@@ -3133,7 +3145,22 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         media_target = self._media_launch_target(app_id)
         if media_target:
+            service = ServiceCatalog().get(app_id) or {"activate_mode": "entertainment"}
+            if not str(service.get("activate_mode") or "").strip():
+                service["activate_mode"] = "entertainment"
+            try:
+                self.apply_app_activation_mode(service, app_id)
+            except OSError as exc:
+                self.send_json_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "mode_activation_failed",
+                    app_id=app_id,
+                    detail=str(exc),
+                    source=str(CURRENT_MODE_REQUEST_PATH),
+                )
+                return
             payload = self._start_media_app(app_id)
+            payload["open_url"] = self._tokenized_media_url(app_id)
             self.send_json(payload, status=HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_GATEWAY)
             return
 
@@ -3188,7 +3215,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
     def apps_payload(self) -> dict[str, object]:
 
-        runtime = runtime_status_payload()
+        runtime = runtime_status_payload(detail="full")
         published = runtime.get("published", {}).get("state", {})
         transfer_state = published.get("transfer", {}) if isinstance(published, dict) else {}
         published_web_services = published.get("web_services", {}) if isinstance(published, dict) else {}
@@ -3279,28 +3306,25 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             })
 
         # Always inject media stack services regardless of menu_visible flag
-        MEDIA_SERVICES = [
-            {"id": "jellyfin",  "name": "Jellyfin",  "description": "Open-source self-hosted media server, no account required", "container": "rocky-media-jellyfin",  "url": "http://192.168.1.199:8096/", "port": 8096},
-            {"id": "jellyseerr", "name": "Jellyseerr", "description": "Media request portal with Jellyfin support", "container": "rocky-media-jellyseerr", "url": "http://192.168.1.199:5055/", "port": 5055},
-            {"id": "prowlarr",  "name": "Prowlarr",  "description": "Indexer manager and proxy for Radarr/Sonarr", "container": "rocky-media-prowlarr",  "url": "http://192.168.1.199:9696/", "port": 9696},
-            {"id": "radarr",   "name": "Radarr",   "description": "Movie automation and library management",    "container": "rocky-media-radarr",   "url": "http://192.168.1.199:7878/", "port": 7878},
-            {"id": "sonarr",   "name": "Sonarr",   "description": "Series automation and library management",   "container": "rocky-media-sonarr",   "url": "http://192.168.1.199:8989/", "port": 8989},
-            {"id": "bazarr",   "name": "Bazarr",   "description": "Subtitle automation for movies and series",  "container": "rocky-media-bazarr",   "url": "http://192.168.1.199:6767/", "port": 6767},
-        ]
         existing_ids = {str(e.get("id")) for e in entries}
-        for svc in MEDIA_SERVICES:
-            if svc["id"] in existing_ids:
+        for app_id, spec in MEDIA_STACK_APPS.items():
+            if app_id in existing_ids:
                 continue
+            service = catalog.get(app_id) or {}
+            container = str(service.get("docker_container") or spec["container"])
+            raw_url = str(service.get("url") or spec["local_url"])
+            live_service = published_web_services.get(app_id) if isinstance(published_web_services, dict) else None
+            cached_service = published_web_cache.get(app_id) if isinstance(published_web_cache, dict) else None
             try:
-                r = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", svc["container"]], capture_output=True, text=True, check=False, timeout=5)
+                r = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", container], capture_output=True, text=True, check=False, timeout=5)
                 raw = r.stdout.strip()
                 if raw == "running":
                     status = "running"
+                elif isinstance(live_service, dict) and isinstance(live_service.get("active"), bool):
+                    status = "running" if live_service.get("active") else "stopped"
                 elif r.returncode != 0:
-                    # docker not accessible — try TCP connect to confirm port is up
-                    import socket as _sock
                     try:
-                        with _sock.create_connection(("127.0.0.1", svc["port"]), timeout=1):
+                        with socket.create_connection(("127.0.0.1", int(spec["port"])), timeout=1):
                             status = "running"
                     except OSError:
                         status = "stopped"
@@ -3308,23 +3332,33 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     status = "stopped"
             except Exception:
                 status = "unknown"
-            public_url = self.publicize_service_url(svc["url"])
-            container = str(svc.get("container") or "")
+            public_url = self.publicize_service_url(raw_url)
+            tokenized_url = None
+            if isinstance(live_service, dict):
+                tokenized_url = str(live_service.get("tokenized_proxy_url") or "").strip() or None
+                public_url = str(live_service.get("url") or public_url or "").strip() or public_url
+            if tokenized_url is None and isinstance(cached_service, dict):
+                tokenized_url = str(cached_service.get("last_tokenized_proxy_url") or "").strip() or None
+                if public_url is None:
+                    cached_public = str(cached_service.get("last_url") or "").strip()
+                    public_url = cached_public or public_url
+            if tokenized_url is None:
+                tokenized_url = self._tokenized_media_url(app_id)
             if container and container not in version_cache:
                 version_cache[container] = docker_container_version(container)
-            if svc["id"] not in app_version_cache:
-                app_version_cache[svc["id"]] = service_reported_version(svc["id"], svc["url"])
-            version = app_version_cache.get(svc["id"]) or version_cache.get(container) or local_build_version()
+            if app_id not in app_version_cache:
+                app_version_cache[app_id] = service_reported_version(app_id, raw_url)
+            version = app_version_cache.get(app_id) or version_cache.get(container) or local_build_version()
             entries.append({
-                "id": svc["id"],
-                "name": svc["name"],
-                "description": svc["description"],
+                "id": app_id,
+                "name": str(service.get("name") or spec["name"]),
+                "description": str(service.get("description") or spec["description"]),
                 "status": status,
                 "type": "background_service",
                 "version": version,
-                "open_url": public_url,
-                "mobile_url": public_url,
-                "qr_url": self.qr_image_url(public_url) if public_url else None,
+                "open_url": tokenized_url or public_url,
+                "mobile_url": tokenized_url or public_url,
+                "qr_url": self.qr_image_url(tokenized_url or public_url) if (tokenized_url or public_url) else None,
             })
 
         return {"entries": entries, "config": config}
@@ -3419,7 +3453,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         vpn = config.get("vpn", {})
         privacy = config.get("privacy_relay", {})
         transfer = config.get("transfer", {})
-        MEDIA_IDS = {"jellyfin", "jellyseerr", "prowlarr", "radarr", "sonarr", "bazarr", "transfer-stack"}
+        MEDIA_IDS = set(media_app_ids()) | {"transfer-stack"}
         EMOJI_MAP = {
             "radarr": "🎬", "sonarr": "📺", "bazarr": "💬",
             "prowlarr": "🔎", "jellyseerr": "🎯", "jellyfin": "🎞️", "transfer-stack": "⚡", "torrentz": "⚡", "pihole": "🛡️",
@@ -3452,10 +3486,11 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             actions_html = ""
             if entry.get("open_url"):
                 safe_url = html.escape(str(entry["open_url"]))
-                if eid == "transfer-stack":
-                    actions_html += f'<a href="{safe_url}" target="_blank" rel="noreferrer" class="{launch_cls}">&#x25BA; LAUNCH</a>'
+                safe_app_id = html.escape(eid)
+                if is_media:
+                    app_id_attr = f' data-app-id="{safe_app_id}"' if eid != "transfer-stack" else ""
+                    actions_html += f'<a href="{safe_url}" target="_blank" rel="noreferrer" class="{launch_cls}"{app_id_attr}>&#x25BA; LAUNCH</a>'
                 else:
-                    safe_app_id = html.escape(eid)
                     actions_html += f'<button class="{launch_cls}" data-app-id="{safe_app_id}" data-open-url="{safe_url}" type="button">&#x25BA; LAUNCH</button>'
             if entry.get("qr_url") and entry.get("mobile_url"):
                 safe_qr = html.escape(str(entry["qr_url"]))
@@ -3568,6 +3603,7 @@ async function startAndOpenApp(button) {{
   const appId = button.dataset.appId;
   const fallbackUrl = button.dataset.openUrl;
   const oldText = button.textContent;
+  const popup = fallbackUrl ? window.open(fallbackUrl, '_blank', 'noreferrer') : null;
   button.disabled = true;
   button.textContent = 'Starting...';
   try {{
@@ -3581,7 +3617,11 @@ async function startAndOpenApp(button) {{
       throw new Error(payload.error || payload.detail || 'launch_failed');
     }}
     const url = payload.open_url || fallbackUrl;
-    if (url) window.open(url, '_blank', 'noreferrer');
+    if (url && popup) {{
+      try {{ popup.location.href = url; }} catch (e) {{}}
+    }} else if (url) {{
+      window.location.href = url;
+    }}
     if (feedback) feedback.textContent = JSON.stringify(payload, null, 2);
   }} catch (error) {{
     if (feedback) feedback.textContent = 'Launch failed for ' + appId + ': ' + error;
@@ -3591,6 +3631,16 @@ async function startAndOpenApp(button) {{
   }}
 }}
 document.querySelectorAll('.btn-launch[data-app-id]').forEach((button) => {{
+  if (button.tagName === 'A') {{
+    button.addEventListener('click', () => {{
+      fetch('/api/apps/launch', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json', 'X-Rocky-CSRF': csrfToken}},
+        body: JSON.stringify({{id: button.dataset.appId}})
+      }}).catch(() => {{}});
+    }});
+    return;
+  }}
   button.addEventListener('click', () => startAndOpenApp(button));
 }});
 

@@ -22,6 +22,11 @@ from manager.runtime import (
     button_server,
 )
 from manager.runtime.context import RuntimeContext
+from manager.runtime.media_stack import (
+    MEDIA_STACK_APPS,
+    MEDIA_STACK_COMPOSE,
+    MEDIA_STACK_ROOT,
+)
 from manager.system_probe import network_header_token, network_links_snapshot
 
 
@@ -235,7 +240,7 @@ DEFAULT_MODE_CATALOG = {
         {
             "mode_id": "entertainment",
             "label": "Entertainment",
-            "description": "VPN-backed media center with Torrentz, Radarr, Sonarr, Bazarr, and StashApp.",
+            "description": "VPN-backed media center with Torrentz, Jellyfin, Jellyseerr, Prowlarr, Radarr, Sonarr, and Bazarr.",
             "category": "entertainment",
             "network": {
                 "profile": "wireguard_admin",
@@ -739,26 +744,58 @@ class ManagerDaemon:
             self._clear_runtime_caches()
             return False
 
+    def _start_media_container(self, container_name: str, compose_service: str) -> bool:
+        """Create/start a media-stack service, preferring compose so missing containers are created."""
+        import subprocess as _sp
+
+        if MEDIA_STACK_COMPOSE.is_file():
+            try:
+                result = _sp.run(
+                    [
+                        "docker",
+                        "compose",
+                        "-f",
+                        str(MEDIA_STACK_COMPOSE),
+                        "up",
+                        "-d",
+                        compose_service,
+                    ],
+                    cwd=str(MEDIA_STACK_ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                    check=False,
+                )
+                self._clear_runtime_caches()
+                if result.returncode == 0:
+                    return True
+                self.log.warning(
+                    "compose up %s failed (%s): %s",
+                    compose_service,
+                    result.returncode,
+                    (result.stderr or result.stdout or "").strip(),
+                )
+            except Exception:
+                self.log.exception("compose up %s failed", compose_service)
+                self._clear_runtime_caches()
+        return self._docker_ensure(container_name, running=True)
+
     def _reconcile_mode_actions(self, effective_mode_id: str) -> None:
-        """Enforce the actual running state of transfer containers for the given mode."""
+        """Enforce the actual running state of transfer and media containers for the given mode."""
         import time as _time
         GLUETUN = 'rocky-transfer-gluetun'
         QBT = 'rocky-transfer-qbittorrent'
         PIHOLE = 'rocky-pihole'
-        MEDIA_CONTAINERS = (
-            'rocky-media-radarr',
-            'rocky-media-sonarr',
-            'rocky-media-bazarr',
-            'rocky-media-stashapp',
-        )
 
         def ensure_media(running: bool) -> None:
-            for container_name in MEDIA_CONTAINERS:
+            for app_id, spec in MEDIA_STACK_APPS.items():
+                container_name = str(spec["container"])
+                compose_service = str(spec["compose_service"])
                 container_health = self._docker_container_health(container_name)
                 if running:
                     if container_health == 'stopped':
-                        self.log.info('%s: starting %s', effective_mode_id, container_name)
-                        self._docker_ensure(container_name, running=True)
+                        self.log.info('%s: starting %s (%s)', effective_mode_id, container_name, app_id)
+                        self._start_media_container(container_name, compose_service)
                 elif container_health != 'stopped':
                     self.log.info('%s: stopping %s', effective_mode_id, container_name)
                     self._docker_ensure(container_name, running=False)
@@ -1297,10 +1334,10 @@ class ManagerDaemon:
                     'qbittorrent': qbt_status,
                     'pihole': self._mode_service_status('pihole-FTL'),
                     'pikvm': str(effective_mode.get('pikvm', {}).get('policy', 'auto')),
-                    'radarr': self._docker_container_health('rocky-media-radarr'),
-                    'sonarr': self._docker_container_health('rocky-media-sonarr'),
-                    'bazarr': self._docker_container_health('rocky-media-bazarr'),
-                    'stashapp': self._docker_container_health('rocky-media-stashapp'),
+                    **{
+                        app_id: self._docker_container_health(str(spec["container"]))
+                        for app_id, spec in MEDIA_STACK_APPS.items()
+                    },
                 },
                 'policies': {
                     'lan_admin': bool(effective_mode.get('network', {}).get('allow_lan_admin', True)),

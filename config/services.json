@@ -225,7 +225,7 @@
       "-m",
       "apps.entertainment"
     ],
-    "description": "Virtual media center with Torrentz, Radarr, Sonarr, Bazarr, and StashApp",
+    "description": "Virtual media center with Torrentz, Jellyfin, Jellyseerr, Prowlarr, Radarr, Sonarr, and Bazarr",
     "display_owner": true,
     "environment": {
       "PYTHONPATH": "/opt/zero2w-manager",
@@ -239,6 +239,7 @@
     "working_directory": "/opt/zero2w-manager"
   },
   "jellyfin": {
+    "activate_mode": "entertainment",
     "background_allowed": true,
     "command": null,
     "description": "Open-source self-hosted media server, no account required",
@@ -254,6 +255,7 @@
     "docker_container": "rocky-media-jellyfin"
   },
   "jellyseerr": {
+    "activate_mode": "entertainment",
     "background_allowed": true,
     "command": null,
     "description": "Media request portal with Jellyfin support",
@@ -269,6 +271,7 @@
     "docker_container": "rocky-media-jellyseerr"
   },
   "prowlarr": {
+    "activate_mode": "entertainment",
     "background_allowed": true,
     "command": null,
     "description": "Indexer manager and proxy for Radarr and Sonarr",
@@ -284,6 +287,7 @@
     "docker_container": "rocky-media-prowlarr"
   },
   "radarr": {
+    "activate_mode": "entertainment",
     "background_allowed": true,
     "command": null,
     "description": "Movie automation and library management",
@@ -299,6 +303,7 @@
     "docker_container": "rocky-media-radarr"
   },
   "sonarr": {
+    "activate_mode": "entertainment",
     "background_allowed": true,
     "command": null,
     "description": "Series automation and library management",
@@ -314,6 +319,7 @@
     "docker_container": "rocky-media-sonarr"
   },
   "bazarr": {
+    "activate_mode": "entertainment",
     "background_allowed": true,
     "command": null,
     "description": "Subtitle automation for movies and series",

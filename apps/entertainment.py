@@ -19,6 +19,7 @@ try:
 except Exception:
     from manager.button_service import ButtonEvent
 
+from manager.runtime.media_stack import entertainment_menu_items
 from manager.sdk import RockyButtonApp
 
 
@@ -33,13 +34,7 @@ HEIGHT = 122
 VISIBLE_ROWS = 4
 RUNTIME_STATE_PATH = Path("/run/rocky/state.json")
 
-MENU_ITEMS = [
-    {"id": "transfer-stack", "label": "Torrentz", "caption": "qBittorrent via TorrentFortress"},
-    {"id": "radarr", "label": "Radarr", "caption": "Movie automation"},
-    {"id": "sonarr", "label": "Sonarr", "caption": "Series automation"},
-    {"id": "bazarr", "label": "Bazarr", "caption": "Subtitle automation"},
-    {"id": "stashapp", "label": "StashApp", "caption": "Personal media browser"},
-]
+MENU_ITEMS = entertainment_menu_items()
 
 
 class EntertainmentApp(RockyButtonApp):

@@ -11,6 +11,7 @@ from typing import Any
 
 from manager.system_probe import network_header_token, network_links_snapshot, process_snapshot
 from manager.runtime import ServiceCatalog
+from manager.runtime.media_stack import media_container_names
 
 
 DEFAULT_SERVICE = "zero2w-manager.service"
@@ -29,10 +30,7 @@ DEFAULT_DOCKER_CONTAINERS = (
     "rocky-pihole",
     "rocky-transfer-gluetun",
     "rocky-transfer-qbittorrent",
-    "rocky-media-radarr",
-    "rocky-media-sonarr",
-    "rocky-media-bazarr",
-    "rocky-media-stashapp",
+    *media_container_names(),
 )
 
 
