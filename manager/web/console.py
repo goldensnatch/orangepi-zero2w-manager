@@ -57,6 +57,7 @@ from manager.runtime.app_proxy import (
     proxy_app_id_from_path,
     rewrite_html_root_paths,
     rewrite_upstream_headers,
+    static_asset_from_login_query,
 )
 from manager.runtime.service_catalog import ServiceCatalog
 from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids, media_launch_target
@@ -3576,9 +3577,14 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         if not base:
             self.send_error_page(404, "Unknown proxied application")
             return
+        forwarded_query = request.query
+        if remainder == "login" or remainder.endswith("/login"):
+            asset = static_asset_from_login_query(request.query)
+            if asset:
+                remainder = asset.lstrip("/")
+                forwarded_query = ""
         target_path = "/" + remainder if remainder else "/"
         target = base.rstrip("/") + target_path
-        forwarded_query = request.query
         if forwarded_query:
             parsed_query = parse_qs(forwarded_query, keep_blank_values=True)
             parsed_query.pop("access_token", None)

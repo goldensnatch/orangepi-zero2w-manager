@@ -48,6 +48,10 @@ _CONSOLE_PATH_PREFIXES = (
 )
 _APP_LOGIN_QUERY_KEYS = {"returnurl", "return_url", "returnto"}
 _CSP_HEADERS = {"content-security-policy", "content-security-policy-report-only", "x-webkit-csp"}
+_STATIC_ASSET_RE = re.compile(
+    r"(?i)(?:^|/)[^/?]+\.(?:js|css|map|woff2?|ttf|png|jpe?g|gif|svg|ico)(?:\?|$)"
+)
+_ARR_URLBASE_RE = re.compile(r"""(urlBase\s*:\s*)(['"])(?:__URL_BASE__|/)?([^'"]*)\2""")
 
 
 def public_proxy_app_ids() -> frozenset[str]:
@@ -70,6 +74,20 @@ def is_rocky_console_request(path: str) -> bool:
     if normalized in {"/", "/login"}:
         return True
     return _is_rocky_console_path(normalized)
+
+
+def static_asset_from_login_query(query: str) -> str | None:
+    """Webpack sometimes treats /login?returnUrl=/ as publicPath and appends 194-hash.js."""
+    for key, value in parse_qsl(str(query or ""), keep_blank_values=True):
+        if key.lower() not in {"returnurl", "return_url", "returnto"}:
+            continue
+        candidate = urlparse(str(value or "").strip()).path or str(value or "").strip()
+        if not _STATIC_ASSET_RE.search(candidate):
+            continue
+        if not candidate.startswith("/"):
+            candidate = "/" + candidate
+        return candidate
+    return None
 
 
 def leaked_proxy_app_id(
@@ -102,15 +120,36 @@ def proxy_bridge_script(app_id: str) -> str:
         "if(typeof URL!=='undefined'&&u instanceof URL)return rewrite(u.href);"
         "if(typeof u!=='string')return u;"
         "try{"
-        "var x=new URL(u,location.href);"
+        "var x=new URL(u,location.origin+p+'/');"
         "if(x.host!==location.host)return u;"
-        "if(x.pathname===p||x.pathname.indexOf(p+'/')===0)return u;"
         "if(skip(x.pathname))return u;"
-        "var next=p+x.pathname+x.search+x.hash;"
+        "var path=x.pathname,search=x.search;"
+        "var ru=x.searchParams.get('returnUrl')||x.searchParams.get('returnurl');"
+        "if((path===p+'/login'||path.slice(-6)==='/login')&&ru&&/\\.(js|css|map|woff2?|png|svg|ico)(\\?|$)/i.test(ru)){"
+        "path=ru.charAt(0)==='/'?ru:'/'+ru;search='';}"
+        "if(path!==p&&path.indexOf(p+'/')!==0)path=p+(path.charAt(0)==='/'?path:'/'+path);"
+        "var next=path+search+x.hash;"
         "if(x.protocol==='ws:'||x.protocol==='wss:')return x.protocol+'//'+location.host+next;"
         "if(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u))return x.protocol+'//'+location.host+next;"
         "return next;"
         "}catch(e){return u;}}"
+        "function pin(v){if(v&&typeof v==='object'){try{v.urlBase=p;}catch(e){}}return v;}"
+        "['Prowlarr','Radarr','Sonarr','Lidarr','Readarr','Whisparr'].forEach(function(n){"
+        "var cur=window[n];"
+        "try{Object.defineProperty(window,n,{configurable:true,get:function(){return cur;},"
+        "set:function(v){cur=pin(v);}});}catch(e){}"
+        "if(cur)pin(cur);});"
+        "function hook(proto,prop){var d=Object.getOwnPropertyDescriptor(proto,prop);"
+        "if(!d||!d.set)d=Object.getOwnPropertyDescriptor(HTMLElement.prototype,prop);"
+        "if(!d||!d.set)return;"
+        "Object.defineProperty(proto,prop,{configurable:true,enumerable:true,"
+        "get:function(){return d.get.call(this);},"
+        "set:function(v){d.set.call(this,rewrite(String(v)));}});} "
+        "hook(HTMLScriptElement.prototype,'src');hook(HTMLLinkElement.prototype,'href');"
+        "var sa=Element.prototype.setAttribute;"
+        "Element.prototype.setAttribute=function(n,v){"
+        "if(n&&(String(n).toLowerCase()==='src'||String(n).toLowerCase()==='href'))v=rewrite(String(v));"
+        "return sa.call(this,n,v);};"
         "var f=window.fetch;"
         "if(f)window.fetch=function(i,n){if(typeof i==='string'||(typeof URL!=='undefined'&&i instanceof URL)"
         "||(typeof Request!=='undefined'&&i instanceof Request))i=rewrite(i);"
@@ -124,18 +163,19 @@ def proxy_bridge_script(app_id: str) -> str:
 
 
 def inject_proxy_bridge(html: str, app_id: str) -> str:
-    script = proxy_bridge_script(app_id)
+    prefix = proxy_prefix(app_id)
+    snippet = f'<base href="{prefix}/">' + proxy_bridge_script(app_id)
     lower = html.lower()
     marker = "<head>"
     idx = lower.find(marker)
     if idx >= 0:
         insert = idx + len(marker)
-        return html[:insert] + script + html[insert:]
+        return html[:insert] + snippet + html[insert:]
     match = re.search(r"<head\s[^>]*>", html, flags=re.IGNORECASE)
     if match:
         insert = match.end()
-        return html[:insert] + script + html[insert:]
-    return script + html
+        return html[:insert] + snippet + html[insert:]
+    return snippet + html
 
 
 def proxied_app_login_location(
@@ -163,6 +203,9 @@ def proxied_app_login_location(
         return None
     if not referer_app and not looks_like_app_login and not last_app_id:
         return None
+    asset = static_asset_from_login_query(request_query)
+    if asset:
+        return f"{proxy_prefix(app_id)}{asset}"
     if looks_like_app_login or pairs:
         location = f"{proxy_prefix(app_id)}/login"
         if pairs:
@@ -275,6 +318,8 @@ def rewrite_html_root_paths(payload: bytes, app_id: str, content_type: str) -> b
     text = _ROOT_ATTR_RE.sub(rf"\g<attr>{prefix}/\g<path>", text)
     text = _URL_FUNC_RE.sub(rf"url({prefix}/", text)
     text = _QUOTED_ROOT_RE.sub(rf"\g<quote>{prefix}/\g<path>\g<quote>", text)
+    text = _ARR_URLBASE_RE.sub(rf'\1\2{prefix}\2', text)
+    text = text.replace("__URL_BASE__", prefix)
     text = inject_proxy_bridge(text, app_id)
     return text.encode("utf-8")
 

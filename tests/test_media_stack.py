@@ -128,6 +128,20 @@ class MediaStackTests(unittest.TestCase):
         )
         self.assertIn(b'window.location="/proxy/radarr/login?returnUrl=%2F"', js_html)
         self.assertIn(b"window.__rockyPrefix", js_html)
+        self.assertIn(b'<base href="/proxy/radarr/">', js_html)
+        html_urlbase = rewrite_html_root_paths(
+            b'<html><head></head><script>window.Prowlarr={urlBase:""}</script></html>',
+            "prowlarr",
+            "text/html",
+        )
+        self.assertIn(b'urlBase:"/proxy/prowlarr"', html_urlbase)
+        from manager.runtime.app_proxy import static_asset_from_login_query
+
+        self.assertEqual(
+            static_asset_from_login_query("returnUrl=%2F194-4b970a3e3dd59743b5ea.js"),
+            "/194-4b970a3e3dd59743b5ea.js",
+        )
+        self.assertIsNone(static_asset_from_login_query("returnUrl=%2F"))
         json_payload = rewrite_html_root_paths(
             b'{"save_path":"/data/downloads","apiRoot":"/api/v1"}',
             "prowlarr",
