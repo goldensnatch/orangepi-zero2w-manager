@@ -52,6 +52,7 @@ from manager.runtime.app_proxy import (
     LAST_PROXY_APP_COOKIE,
     filter_browser_cookies_for_upstream,
     is_public_proxy_app,
+    leaked_proxy_app_id,
     proxied_app_login_location,
     proxy_app_id_from_path,
     rewrite_html_root_paths,
@@ -2346,6 +2347,19 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         self.audit_success("UPLOAD", workspace=root_name, path=relative_path, filename=file_field.filename, bytes_written=len(payload), overwrite=overwrite)
         self.send_json({"ok": True, "root": root_name, "path": relative_path, "bytes_written": len(payload)})
 
+    def _leaked_proxy_request(self, request):
+        app_id = leaked_proxy_app_id(
+            path=request.path,
+            referer=self.headers.get("Referer", ""),
+            last_app_id=self._cookie(LAST_PROXY_APP_COOKIE) or "",
+        )
+        if not app_id:
+            return None
+        proxied = f"/proxy/{app_id}{request.path}"
+        if request.query:
+            proxied += f"?{request.query}"
+        return urlparse(proxied)
+
     def do_GET(self) -> None:
 
         request = urlparse(self.path)
@@ -2354,6 +2368,11 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
             self.handle_proxy(request, method="GET")
 
+            return
+
+        leaked = self._leaked_proxy_request(request)
+        if leaked is not None:
+            self.handle_proxy(leaked, method="GET")
             return
 
         if request.path == "/login":
@@ -2441,6 +2460,15 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
             self.handle_proxy(request, method="POST")
 
+            return
+
+        leaked = self._leaked_proxy_request(request)
+        if leaked is not None:
+            if not self.require_request_size_allowed():
+                return
+            if not self.require_rate_limit("write", limit=RATE_LIMIT_WRITE):
+                return
+            self.handle_proxy(leaked, method="POST")
             return
 
         if request.path == "/login":
@@ -2633,6 +2661,29 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         )
 
 
+
+    def _dispatch_app_proxy(self, method: str) -> None:
+        request = urlparse(self.path)
+        if request.path.startswith("/proxy/"):
+            self.handle_proxy(request, method=method)
+            return
+        leaked = self._leaked_proxy_request(request)
+        if leaked is not None:
+            self.handle_proxy(leaked, method=method)
+            return
+        self.send_error_page(HTTPStatus.METHOD_NOT_ALLOWED, "Method not allowed")
+
+    def do_PUT(self) -> None:
+        self._dispatch_app_proxy("PUT")
+
+    def do_PATCH(self) -> None:
+        self._dispatch_app_proxy("PATCH")
+
+    def do_DELETE(self) -> None:
+        self._dispatch_app_proxy("DELETE")
+
+    def do_HEAD(self) -> None:
+        self._dispatch_app_proxy("HEAD")
 
     def handle_api_runtime_status(self) -> None:
 
@@ -3538,7 +3589,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             if query_parts:
                 target += "?" + "&".join(query_parts)
         body = None
-        if method == "POST":
+        if method in {"POST", "PUT", "PATCH"}:
             length = int(self.headers.get("Content-Length", "0") or "0")
             body = self.rfile.read(length)
         upstream = urlparse(base)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from urllib.parse import parse_qsl, urlencode, urlparse
 
@@ -36,9 +37,17 @@ _CONSOLE_PATH_PREFIXES = (
     "/files",
     "/view",
     "/download",
-    "/api/",
+    "/api/runtime",
+    "/api/security",
+    "/api/mode",
+    "/api/network",
+    "/api/transfer",
+    "/api/storage",
+    "/api/audit",
+    "/api/apps",
 )
 _APP_LOGIN_QUERY_KEYS = {"returnurl", "return_url", "returnto"}
+_CSP_HEADERS = {"content-security-policy", "content-security-policy-report-only", "x-webkit-csp"}
 
 
 def public_proxy_app_ids() -> frozenset[str]:
@@ -54,6 +63,79 @@ def proxy_app_id_from_path(path: str) -> str | None:
     if len(parts) >= 2 and parts[0] == "proxy" and parts[1]:
         return parts[1]
     return None
+
+
+def is_rocky_console_request(path: str) -> bool:
+    normalized = str(path or "/") or "/"
+    if normalized in {"/", "/login"}:
+        return True
+    return _is_rocky_console_path(normalized)
+
+
+def leaked_proxy_app_id(
+    *,
+    path: str,
+    referer: str = "",
+    last_app_id: str = "",
+) -> str | None:
+    """Map a root-relative app request (e.g. /initialize.json) back to /proxy/<app>/."""
+    if str(path or "").startswith("/proxy/") or is_rocky_console_request(path):
+        return None
+    app_id = proxy_app_id_from_path(urlparse(referer or "").path) or str(last_app_id or "").strip()
+    if not app_id or not is_public_proxy_app(app_id):
+        return None
+    return app_id
+
+
+def proxy_bridge_script(app_id: str) -> str:
+    prefix = json.dumps(proxy_prefix(app_id))
+    return (
+        "<script>(function(p){"
+        "if(window.__rockyPrefix)return;window.__rockyPrefix=p;"
+        "function skip(path){"
+        "var s=['/apps','/logs','/files','/view','/download','/api/runtime','/api/security',"
+        "'/api/mode','/api/network','/api/transfer','/api/storage','/api/audit','/api/apps'];"
+        "for(var i=0;i<s.length;i++){if(path===s[i]||path.indexOf(s[i]+'/')===0)return true;}"
+        "return false;}"
+        "function rewrite(u){"
+        "if(typeof Request!=='undefined'&&u instanceof Request)return new Request(rewrite(u.url),u);"
+        "if(typeof URL!=='undefined'&&u instanceof URL)return rewrite(u.href);"
+        "if(typeof u!=='string')return u;"
+        "try{"
+        "var x=new URL(u,location.href);"
+        "if(x.host!==location.host)return u;"
+        "if(x.pathname===p||x.pathname.indexOf(p+'/')===0)return u;"
+        "if(skip(x.pathname))return u;"
+        "var next=p+x.pathname+x.search+x.hash;"
+        "if(x.protocol==='ws:'||x.protocol==='wss:')return x.protocol+'//'+location.host+next;"
+        "if(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u))return x.protocol+'//'+location.host+next;"
+        "return next;"
+        "}catch(e){return u;}}"
+        "var f=window.fetch;"
+        "if(f)window.fetch=function(i,n){if(typeof i==='string'||(typeof URL!=='undefined'&&i instanceof URL)"
+        "||(typeof Request!=='undefined'&&i instanceof Request))i=rewrite(i);"
+        "return f.call(this,i,n);};"
+        "var o=XMLHttpRequest.prototype.open;"
+        "XMLHttpRequest.prototype.open=function(m,u){arguments[1]=rewrite(u);return o.apply(this,arguments);};"
+        "if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,pr){"
+        "return pr===undefined?new W(rewrite(u)):new W(rewrite(u),pr);};window.WebSocket.prototype=W.prototype;}"
+        "})(" + prefix + ");</script>"
+    )
+
+
+def inject_proxy_bridge(html: str, app_id: str) -> str:
+    script = proxy_bridge_script(app_id)
+    lower = html.lower()
+    marker = "<head>"
+    idx = lower.find(marker)
+    if idx >= 0:
+        insert = idx + len(marker)
+        return html[:insert] + script + html[insert:]
+    match = re.search(r"<head\s[^>]*>", html, flags=re.IGNORECASE)
+    if match:
+        insert = match.end()
+        return html[:insert] + script + html[insert:]
+    return script + html
 
 
 def proxied_app_login_location(
@@ -183,7 +265,7 @@ def rewrite_cookie_header(value: str, app_id: str) -> str:
 
 def rewrite_html_root_paths(payload: bytes, app_id: str, content_type: str) -> bytes:
     kind = str(content_type or "").lower()
-    if not any(token in kind for token in ("html", "javascript", "json")):
+    if "html" not in kind:
         return payload
     prefix = proxy_prefix(app_id)
     try:
@@ -193,6 +275,7 @@ def rewrite_html_root_paths(payload: bytes, app_id: str, content_type: str) -> b
     text = _ROOT_ATTR_RE.sub(rf"\g<attr>{prefix}/\g<path>", text)
     text = _URL_FUNC_RE.sub(rf"url({prefix}/", text)
     text = _QUOTED_ROOT_RE.sub(rf"\g<quote>{prefix}/\g<path>\g<quote>", text)
+    text = inject_proxy_bridge(text, app_id)
     return text.encode("utf-8")
 
 
@@ -205,7 +288,7 @@ def rewrite_upstream_headers(
     rewritten: dict[str, str] = {}
     for name, value in headers.items():
         lower = name.lower()
-        if lower in HOP_BY_HOP_HEADERS:
+        if lower in HOP_BY_HOP_HEADERS or lower in _CSP_HEADERS:
             continue
         if lower == "location":
             rewritten[name] = rewrite_upstream_location(

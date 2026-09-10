@@ -122,11 +122,18 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn(b'action="/proxy/prowlarr/login"', html)
         self.assertIn(b'href="/proxy/prowlarr/Content/logo.svg"', html)
         js_html = rewrite_html_root_paths(
-            b'<script>window.location="/login?returnUrl=%2F"</script>',
+            b'<html><head></head><script>window.location="/login?returnUrl=%2F"</script></html>',
             "radarr",
             "text/html",
         )
         self.assertIn(b'window.location="/proxy/radarr/login?returnUrl=%2F"', js_html)
+        self.assertIn(b"window.__rockyPrefix", js_html)
+        json_payload = rewrite_html_root_paths(
+            b'{"save_path":"/data/downloads","apiRoot":"/api/v1"}',
+            "prowlarr",
+            "application/json",
+        )
+        self.assertEqual(json_payload, b'{"save_path":"/data/downloads","apiRoot":"/api/v1"}')
 
     def test_entertainment_proxy_skips_rocky_login(self) -> None:
         from manager.runtime.app_proxy import (
@@ -182,6 +189,37 @@ class MediaStackTests(unittest.TestCase):
                 "rocky_session=abc; arr=xyz; rocky_proxy_prowlarr=tok"
             ),
             "arr=xyz",
+        )
+        from manager.runtime.app_proxy import leaked_proxy_app_id
+
+        self.assertEqual(
+            leaked_proxy_app_id(
+                path="/initialize.json",
+                referer="http://192.168.1.216:8090/proxy/prowlarr/login",
+            ),
+            "prowlarr",
+        )
+        self.assertEqual(
+            leaked_proxy_app_id(
+                path="/api/v2/auth/login",
+                referer="",
+                last_app_id="transfer-stack",
+            ),
+            "transfer-stack",
+        )
+        self.assertIsNone(
+            leaked_proxy_app_id(
+                path="/api/mode/config",
+                referer="http://192.168.1.216:8090/proxy/prowlarr/",
+                last_app_id="prowlarr",
+            )
+        )
+        self.assertIsNone(
+            leaked_proxy_app_id(
+                path="/apps",
+                referer="http://192.168.1.216:8090/proxy/prowlarr/",
+                last_app_id="prowlarr",
+            )
         )
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         proxy_fn = source.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
