@@ -44,10 +44,11 @@ from pathlib import Path
 from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from manager.api import runtime_status as runtime_status_api
 from manager.runtime import network_transfer as network_transfer_runtime
+from manager.runtime.app_proxy import rewrite_html_root_paths, rewrite_upstream_headers
 from manager.runtime.service_catalog import ServiceCatalog
 from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids, media_launch_target
 from manager.runtime.proxy_tokens import (
@@ -66,15 +67,51 @@ from manager.runtime.workspace import (
 
 
 
+class NoFollowRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+PROXY_OPENER = build_opener(NoFollowRedirect)
+
+
+def _env_credential(name: str, default: str = "") -> str:
+    value = os.environ.get(name, default)
+    value = str(value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1]
+    return value
+
+
 HOST = os.environ.get("ROCKY_WEB_HOST", "0.0.0.0")
 
 PORT = int(os.environ.get("ROCKY_WEB_PORT", "8090"))
 
+USERNAME = _env_credential("ROCKY_WEB_USERNAME", "rocky") or "rocky"
+PASSWORD = _env_credential("ROCKY_WEB_PASSWORD")
+SESSION_COOKIE_NAME = "rocky_session"
+SESSION_APP_ID = "rocky-console"
 
 
-USERNAME = os.environ.get("ROCKY_WEB_USERNAME", "rocky")
+def _credentials_match(user: str, password: str) -> bool:
+    if not PASSWORD:
+        return False
 
-PASSWORD = os.environ.get("ROCKY_WEB_PASSWORD", "")
+    def same(left: str, right: str) -> bool:
+        left_bytes = left.encode("utf-8")
+        right_bytes = right.encode("utf-8")
+        if len(left_bytes) != len(right_bytes):
+            return False
+        return secrets.compare_digest(left_bytes, right_bytes)
+
+    return same(user, USERNAME) and same(password, PASSWORD)
+
+
+def _safe_next_path(value: str) -> str:
+    path = str(value or "").strip() or "/apps"
+    if not path.startswith("/") or path.startswith("//") or "://" in path:
+        return "/apps"
+    return path
 
 
 
@@ -801,7 +838,7 @@ def page(title: str, body: str) -> bytes:
 
 <meta name="rocky-csrf-token" content="{html.escape(CSRF_TOKEN)}">
 
-<title>{html.escape(title)} â Rocky</title>
+<title>{html.escape(title)} - Rocky</title>
 
 <style>
 
@@ -1710,35 +1747,56 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
 
 
-    def authenticated(self) -> bool:
-
-        if not PASSWORD:
-
-            return False
-
-        authorization = self.headers.get("Authorization", "")
-
-        if not authorization.startswith("Basic "):
-
-            return False
-
-        encoded = authorization.split(" ", 1)[1].strip()
-
+    def _cookie(self, name: str) -> str | None:
+        header = self.headers.get("Cookie", "")
+        if not header:
+            return None
         try:
-
-            decoded = base64.b64decode(encoded).decode("utf-8")
-
+            cookie = SimpleCookie()
+            cookie.load(header)
         except Exception:
+            return None
+        morsel = cookie.get(name)
+        if morsel is None:
+            return None
+        return str(morsel.value or "")
 
+    def _session_authorized(self) -> bool:
+        token = self._cookie(SESSION_COOKIE_NAME)
+        return bool(token) and check_proxy_token(token, SESSION_APP_ID)
+
+    def _basic_authorized(self) -> bool:
+        if not PASSWORD:
             return False
-
+        authorization = self.headers.get("Authorization", "")
+        if not authorization.startswith("Basic "):
+            return False
+        encoded = authorization.split(" ", 1)[1].strip()
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+        except Exception:
+            return False
         supplied_user, separator, supplied_password = decoded.partition(":")
-
         if not separator:
-
             return False
+        return _credentials_match(supplied_user, supplied_password)
 
-        return supplied_user == USERNAME and supplied_password == PASSWORD
+    def authenticated(self) -> bool:
+        if self._session_authorized():
+            return True
+        return self._basic_authorized()
+
+    def _session_cookie_header(self) -> str:
+        token = mint_proxy_token(SESSION_APP_ID, ttl_seconds=max(PROXY_TOKEN_TTL_SECONDS, 86400))
+        return (
+            f"{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400"
+        )
+
+    def _wants_html(self) -> bool:
+        accept = str(self.headers.get("Accept") or "")
+        if "text/html" in accept:
+            return True
+        return not self.path.startswith("/api/")
 
     def build_proxy_token(self, app_id: str, *, ttl_seconds: int = PROXY_TOKEN_TTL_SECONDS) -> str:
 
@@ -1827,30 +1885,80 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
 
     def require_authentication(self) -> bool:
-
         if self.authenticated():
-
             return True
-
-
-
+        if self._wants_html():
+            next_path = _safe_next_path(self.path)
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", f"/login?next={quote(next_path)}")
+            self.send_header("Content-Length", "0")
+            self._send_security_headers()
+            self.end_headers()
+            return False
         payload = b"Authentication required.\n"
-
         self.send_response(HTTPStatus.UNAUTHORIZED)
-
-        self.send_header("WWW-Authenticate", 'Basic realm="Rocky Console"')
-
         self.send_header("Content-Type", "text/plain; charset=utf-8")
-
         self.send_header("Content-Length", str(len(payload)))
-
         self._send_security_headers()
-
         self.end_headers()
-
         self.wfile.write(payload)
-
         return False
+
+    def handle_login_page(self, *, error: str | None = None, next_path: str | None = None) -> None:
+        request = urlparse(self.path)
+        if next_path is None:
+            next_path = parse_qs(request.query).get("next", ["/apps"])[0]
+        next_path = _safe_next_path(str(next_path))
+        error_html = (
+            f'<p class="card-status-text stopped">{html.escape(error)}</p>'
+            if error
+            else ""
+        )
+        body = f"""
+<section>
+  <div class="section-label cyan">ROCKY LOGIN</div>
+  <p class="muted">Sign in with the Rocky Developer Console username and password from <code>/etc/rocky-web.env</code>. Default username is <code>rocky</code>.</p>
+  {error_html}
+  <form method="post" action="/login" style="max-width:420px;">
+    <input type="hidden" name="next" value="{html.escape(next_path)}">
+    <input type="hidden" name="csrf" value="{html.escape(CSRF_TOKEN)}">
+    <label for="username">Username</label>
+    <input id="username" name="username" value="{html.escape(USERNAME)}" autocomplete="username" required>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <p><button type="submit" class="btn-apply">Sign in</button></p>
+  </form>
+</section>
+"""
+        extra = None
+        if error:
+            extra = {"Set-Cookie": f"{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0"}
+        payload = page("Login", body)
+        self._send_bytes(200, payload, "text/html; charset=utf-8", extra_headers=extra)
+
+    def handle_login_submit(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(max(0, length)).decode("utf-8", errors="replace")
+        form = parse_qs(raw, keep_blank_values=True)
+        username = str((form.get("username") or [""])[0])
+        password = str((form.get("password") or [""])[0])
+        next_path = _safe_next_path(str((form.get("next") or ["/apps"])[0]))
+        csrf = str((form.get("csrf") or [""])[0])
+        if csrf != CSRF_TOKEN:
+            self.handle_login_page(error="Login form expired. Refresh and try again.", next_path=next_path)
+            return
+        if not _credentials_match(username, password):
+            self.handle_login_page(
+                error="Username or password did not match ROCKY_WEB_USERNAME / ROCKY_WEB_PASSWORD.",
+                next_path=next_path,
+            )
+            return
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", next_path)
+        self.send_header("Set-Cookie", self._session_cookie_header())
+        self.send_header("Content-Length", "0")
+        self._send_security_headers()
+        self.end_headers()
 
 
 
@@ -2220,6 +2328,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
             return
 
+        if request.path == "/login":
+            self.handle_login_page()
+            return
+
         if not self.require_authentication():
 
             return
@@ -2301,6 +2413,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
             self.handle_proxy(request, method="POST")
 
+            return
+
+        if request.path == "/login":
+            self.handle_login_submit()
             return
 
         if not self.require_authentication():
@@ -3337,6 +3453,14 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         proxy_path = request.path[len("/proxy/"):]
         app_id, _, remainder = proxy_path.partition("/")
         if not (self.authenticated() or self.token_authorized_proxy(request, app_id)):
+            if self._wants_html():
+                next_path = _safe_next_path(self.path)
+                self.send_response(HTTPStatus.FOUND)
+                self.send_header("Location", f"/login?next={quote(next_path)}")
+                self.send_header("Content-Length", "0")
+                self._send_security_headers()
+                self.end_headers()
+                return
             self.require_authentication()
             return
         extra_headers: dict[str, str] = {}
@@ -3376,15 +3500,30 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         proxy_request.add_header("Host", host_override)
         proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
         proxy_request.add_header("X-Forwarded-Proto", "http")
+        proxy_request.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
         try:
-            with urlopen(proxy_request, timeout=20) as response:
+            with PROXY_OPENER.open(proxy_request, timeout=20) as response:
                 payload = response.read()
-                headers = {name: value for name, value in response.headers.items()}
+                headers = rewrite_upstream_headers(
+                    {name: value for name, value in response.headers.items()},
+                    app_id,
+                    base,
+                )
+                content_type = str(headers.get("Content-Type") or headers.get("content-type") or "")
+                payload = rewrite_html_root_paths(payload, app_id, content_type)
+                headers["Content-Length"] = str(len(payload))
                 self.proxy_response(response.status, payload, headers, extra_headers=extra_headers)
                 return
         except HTTPError as exc:
             payload = exc.read()
-            headers = {name: value for name, value in exc.headers.items()}
+            headers = rewrite_upstream_headers(
+                {name: value for name, value in exc.headers.items()},
+                app_id,
+                base,
+            )
+            content_type = str(headers.get("Content-Type") or headers.get("content-type") or "")
+            payload = rewrite_html_root_paths(payload, app_id, content_type)
+            headers["Content-Length"] = str(len(payload))
             self.proxy_response(exc.code, payload, headers, extra_headers=extra_headers)
             return
         except URLError as exc:

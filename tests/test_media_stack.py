@@ -70,6 +70,31 @@ class MediaStackTests(unittest.TestCase):
             else:
                 os.environ["ROCKY_WEB_PROXY_TOKEN_SECRET"] = previous
 
+    def test_safe_next_path_rejects_external_redirects(self) -> None:
+        from manager.web.console import _safe_next_path
+
+        self.assertEqual(_safe_next_path("/apps"), "/apps")
+        self.assertEqual(_safe_next_path("/proxy/prowlarr/"), "/proxy/prowlarr/")
+        self.assertEqual(_safe_next_path("https://example.com"), "/apps")
+        self.assertEqual(_safe_next_path("//evil.example"), "/apps")
+        from manager.runtime.app_proxy import rewrite_html_root_paths, rewrite_upstream_location
+
+        self.assertEqual(
+            rewrite_upstream_location("/login?returnUrl=%2F", "prowlarr", "http://127.0.0.1:9696/"),
+            "/proxy/prowlarr/login?returnUrl=%2F",
+        )
+        self.assertEqual(
+            rewrite_upstream_location("http://127.0.0.1:9696/login", "prowlarr", "http://127.0.0.1:9696/"),
+            "/proxy/prowlarr/login",
+        )
+        html = rewrite_html_root_paths(
+            b'<form action="/login"><a href="/Content/logo.svg"></a></form>',
+            "prowlarr",
+            "text/html",
+        )
+        self.assertIn(b'action="/proxy/prowlarr/login"', html)
+        self.assertIn(b'href="/proxy/prowlarr/Content/logo.svg"', html)
+
     def test_mode_permission_setup_skips_missing_user(self) -> None:
         import importlib.util
 
