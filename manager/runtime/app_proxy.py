@@ -29,6 +29,16 @@ _QUOTED_ROOT_RE = re.compile(
     r'(?P<quote>["\'])/(?!/)(?!proxy/)(?P<path>[^"\']*)(?P=quote)'
 )
 _ROCKY_COOKIE_PREFIXES = ("rocky_session", "rocky_proxy_")
+LAST_PROXY_APP_COOKIE = "rocky_last_proxy_app"
+_CONSOLE_PATH_PREFIXES = (
+    "/apps",
+    "/logs",
+    "/files",
+    "/view",
+    "/download",
+    "/api/",
+)
+_APP_LOGIN_QUERY_KEYS = {"returnurl", "return_url", "returnto"}
 
 
 def public_proxy_app_ids() -> frozenset[str]:
@@ -51,23 +61,32 @@ def proxied_app_login_location(
     next_path: str = "",
     referer: str = "",
     request_query: str = "",
+    last_app_id: str = "",
 ) -> str | None:
     """Map a Rocky /login hit back to the entertainment app that owns it."""
     candidate = str(next_path or "").strip()
     if candidate.startswith("/proxy/"):
         return candidate
-    app_id = proxy_app_id_from_path(urlparse(referer or "").path)
-    if not app_id or not is_public_proxy_app(app_id):
+    if candidate == "/apps":
         return None
+    referer_app = proxy_app_id_from_path(urlparse(referer or "").path)
     pairs = [
         (key, value)
         for key, value in parse_qsl(str(request_query or ""), keep_blank_values=True)
         if key != "next"
     ]
-    location = f"{proxy_prefix(app_id)}/login"
-    if pairs:
-        location += "?" + urlencode(pairs, doseq=True)
-    return location
+    looks_like_app_login = any(key.lower() in _APP_LOGIN_QUERY_KEYS for key, _ in pairs)
+    app_id = referer_app or str(last_app_id or "").strip()
+    if not app_id or not is_public_proxy_app(app_id):
+        return None
+    if not referer_app and not looks_like_app_login and not last_app_id:
+        return None
+    if looks_like_app_login or pairs:
+        location = f"{proxy_prefix(app_id)}/login"
+        if pairs:
+            location += "?" + urlencode(pairs, doseq=True)
+        return location
+    return f"{proxy_prefix(app_id)}/"
 
 
 def filter_browser_cookies_for_upstream(cookie_header: str) -> str:
@@ -77,7 +96,7 @@ def filter_browser_cookies_for_upstream(cookie_header: str) -> str:
         if not item:
             continue
         name = item.split("=", 1)[0].strip()
-        if name == "rocky_session" or name.startswith(_ROCKY_COOKIE_PREFIXES[1]):
+        if name in {"rocky_session", LAST_PROXY_APP_COOKIE} or name.startswith("rocky_proxy_"):
             continue
         kept.append(item)
     return "; ".join(kept)
@@ -87,13 +106,43 @@ def proxy_prefix(app_id: str) -> str:
     return f"/proxy/{app_id}"
 
 
-def rewrite_upstream_location(location: str, app_id: str, upstream_base: str) -> str:
+def _is_rocky_console_path(path: str) -> bool:
+    normalized = str(path or "/") or "/"
+    if normalized == "/":
+        return False
+    return any(
+        normalized == prefix.rstrip("/") or normalized.startswith(prefix)
+        for prefix in _CONSOLE_PATH_PREFIXES
+    )
+
+
+def _join_proxy_path(app_id: str, path: str, query: str = "", fragment: str = "") -> str:
+    prefix = proxy_prefix(app_id)
+    if not path.startswith("/"):
+        path = "/" + path
+    if path != prefix and not path.startswith(prefix + "/"):
+        path = prefix + path
+    rewritten = path
+    if query:
+        rewritten += f"?{query}"
+    if fragment:
+        rewritten += f"#{fragment}"
+    return rewritten
+
+
+def rewrite_upstream_location(
+    location: str,
+    app_id: str,
+    upstream_base: str,
+    public_hosts: set[str] | None = None,
+) -> str:
     value = str(location or "").strip()
     if not value:
         return value
     prefix = proxy_prefix(app_id)
     parsed = urlparse(value)
     upstream = urlparse(upstream_base)
+    public_hosts = {str(host) for host in (public_hosts or set()) if host}
     if not parsed.netloc:
         path, sep, rest = value.partition("?")
         if not path.startswith("/"):
@@ -102,19 +151,18 @@ def rewrite_upstream_location(location: str, app_id: str, upstream_base: str) ->
             return value
         return prefix + path + (sep + rest if sep else "")
     upstream_hosts = {upstream.hostname, "127.0.0.1", "localhost"}
-    if parsed.hostname not in upstream_hosts:
-        return value
-    if upstream.port and parsed.port not in {None, upstream.port}:
-        return value
-    path = parsed.path or "/"
-    if path != prefix and not path.startswith(prefix + "/"):
-        path = prefix + path
-    rewritten = path
-    if parsed.query:
-        rewritten += f"?{parsed.query}"
-    if parsed.fragment:
-        rewritten += f"#{parsed.fragment}"
-    return rewritten
+    if parsed.hostname in upstream_hosts:
+        if upstream.port and parsed.port not in {None, upstream.port}:
+            return value
+        return _join_proxy_path(app_id, parsed.path or "/", parsed.query, parsed.fragment)
+    if parsed.hostname in public_hosts:
+        path = parsed.path or "/"
+        if path == prefix or path.startswith(prefix + "/"):
+            return _join_proxy_path(app_id, path, parsed.query, parsed.fragment)
+        if _is_rocky_console_path(path):
+            return value
+        return _join_proxy_path(app_id, path, parsed.query, parsed.fragment)
+    return value
 
 
 def rewrite_cookie_header(value: str, app_id: str) -> str:
@@ -134,7 +182,8 @@ def rewrite_cookie_header(value: str, app_id: str) -> str:
 
 
 def rewrite_html_root_paths(payload: bytes, app_id: str, content_type: str) -> bytes:
-    if "html" not in str(content_type or "").lower():
+    kind = str(content_type or "").lower()
+    if not any(token in kind for token in ("html", "javascript", "json")):
         return payload
     prefix = proxy_prefix(app_id)
     try:
@@ -151,6 +200,7 @@ def rewrite_upstream_headers(
     headers: dict[str, str],
     app_id: str,
     upstream_base: str,
+    public_hosts: set[str] | None = None,
 ) -> dict[str, str]:
     rewritten: dict[str, str] = {}
     for name, value in headers.items():
@@ -158,7 +208,12 @@ def rewrite_upstream_headers(
         if lower in HOP_BY_HOP_HEADERS:
             continue
         if lower == "location":
-            rewritten[name] = rewrite_upstream_location(value, app_id, upstream_base)
+            rewritten[name] = rewrite_upstream_location(
+                value,
+                app_id,
+                upstream_base,
+                public_hosts=public_hosts,
+            )
         elif lower == "set-cookie":
             rewritten[name] = rewrite_cookie_header(value, app_id)
         else:

@@ -87,6 +87,33 @@ class MediaStackTests(unittest.TestCase):
             rewrite_upstream_location("http://127.0.0.1:9696/login", "prowlarr", "http://127.0.0.1:9696/"),
             "/proxy/prowlarr/login",
         )
+        self.assertEqual(
+            rewrite_upstream_location(
+                "http://192.168.1.216:8090/login?returnUrl=%2F",
+                "prowlarr",
+                "http://127.0.0.1:9696/",
+                public_hosts={"192.168.1.216"},
+            ),
+            "/proxy/prowlarr/login?returnUrl=%2F",
+        )
+        self.assertEqual(
+            rewrite_upstream_location(
+                "http://192.168.1.216:8090/web/",
+                "jellyfin",
+                "http://127.0.0.1:8096/",
+                public_hosts={"192.168.1.216"},
+            ),
+            "/proxy/jellyfin/web/",
+        )
+        self.assertEqual(
+            rewrite_upstream_location(
+                "http://192.168.1.216:8090/apps",
+                "prowlarr",
+                "http://127.0.0.1:9696/",
+                public_hosts={"192.168.1.216"},
+            ),
+            "http://192.168.1.216:8090/apps",
+        )
         html = rewrite_html_root_paths(
             b'<form action="/login"><a href="/Content/logo.svg"></a></form>',
             "prowlarr",
@@ -126,17 +153,28 @@ class MediaStackTests(unittest.TestCase):
         )
         self.assertEqual(
             proxied_app_login_location(
-                next_path="/apps",
-                referer="http://192.168.1.216:8090/proxy/prowlarr/",
+                next_path="",
+                referer="",
                 request_query="returnUrl=%2F",
+                last_app_id="prowlarr",
             ),
             "/proxy/prowlarr/login?returnUrl=%2F",
+        )
+        self.assertEqual(
+            proxied_app_login_location(
+                next_path="",
+                referer="",
+                request_query="",
+                last_app_id="jellyfin",
+            ),
+            "/proxy/jellyfin/",
         )
         self.assertIsNone(
             proxied_app_login_location(
                 next_path="/apps",
-                referer="http://192.168.1.216:8090/apps",
+                referer="",
                 request_query="",
+                last_app_id="jellyfin",
             )
         )
         self.assertEqual(
@@ -152,9 +190,9 @@ class MediaStackTests(unittest.TestCase):
 
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
-        self.assertIn('target="_blank" rel="noopener noreferrer"', source)
-        self.assertIn("window.open(url, '_blank', 'noopener,noreferrer')", source)
-        self.assertIn("event.preventDefault();", source)
+        self.assertIn('target="_blank" rel="noopener"', source)
+        self.assertIn("window.open(url, '_blank', 'noopener')", source)
+        self.assertNotIn("noopener,noreferrer", source)
         self.assertNotIn("window.location.href = url", source)
         self.assertNotIn("startAndOpenApp", source)
         self.assertNotIn("data-open-url", source)

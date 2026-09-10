@@ -49,6 +49,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from manager.api import runtime_status as runtime_status_api
 from manager.runtime import network_transfer as network_transfer_runtime
 from manager.runtime.app_proxy import (
+    LAST_PROXY_APP_COOKIE,
     filter_browser_cookies_for_upstream,
     is_public_proxy_app,
     proxied_app_login_location,
@@ -207,7 +208,7 @@ SECURITY_HEADERS = {
 
     "Cross-Origin-Resource-Policy": "same-origin",
 
-    "Referrer-Policy": "no-referrer",
+    "Referrer-Policy": "same-origin",
 
     "X-Content-Type-Options": "nosniff",
 
@@ -1922,11 +1923,15 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             next_path=_safe_next_path(str(next_path)) if next_path else "",
             referer=self.headers.get("Referer", ""),
             request_query=request.query,
+            last_app_id=self._cookie(LAST_PROXY_APP_COOKIE) or "",
         )
         if passthrough:
             self._send_redirect(passthrough)
             return
         next_path = _safe_next_path(str(next_path) or "/apps")
+        last_app = self._cookie(LAST_PROXY_APP_COOKIE) or ""
+        if next_path == "/apps" and last_app and is_public_proxy_app(last_app):
+            next_path = f"/proxy/{last_app}/"
         error_html = (
             f'<p class="card-status-text stopped">{html.escape(error)}</p>'
             if error
@@ -1960,17 +1965,22 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         form = parse_qs(raw, keep_blank_values=True)
         username = str((form.get("username") or [""])[0])
         password = str((form.get("password") or [""])[0])
-        next_path = _safe_next_path(str((form.get("next") or ["/apps"])[0]))
+        next_path = _safe_next_path(str((form.get("next") or [""])[0]))
         csrf = str((form.get("csrf") or [""])[0])
+        last_app = self._cookie(LAST_PROXY_APP_COOKIE) or ""
         if csrf != CSRF_TOKEN:
-            self.handle_login_page(error="Login form expired. Refresh and try again.", next_path=next_path)
+            self.handle_login_page(error="Login form expired. Refresh and try again.", next_path=next_path or "/apps")
             return
         if not _credentials_match(username, password):
             self.handle_login_page(
                 error="Username or password did not match ROCKY_WEB_USERNAME / ROCKY_WEB_PASSWORD.",
-                next_path=next_path,
+                next_path=next_path or "/apps",
             )
             return
+        if next_path in {"", "/apps"} and last_app and is_public_proxy_app(last_app):
+            next_path = f"/proxy/{last_app}/"
+        elif not next_path:
+            next_path = "/apps"
         self.send_response(HTTPStatus.FOUND)
         self.send_header("Location", next_path)
         self.send_header("Set-Cookie", self._session_cookie_header())
@@ -3455,6 +3465,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         headers: dict[str, str],
         *,
         extra_headers: dict[str, str] | None = None,
+        extra_cookies: list[str] | None = None,
     ) -> None:
 
         self.send_response(status)
@@ -3466,10 +3477,24 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         if extra_headers:
             for name, value in extra_headers.items():
                 self.send_header(name, value)
+        for cookie in extra_cookies or []:
+            self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(payload)
+
+    def _proxy_public_hosts(self) -> set[str]:
+        hosts: set[str] = set()
+        for raw in (
+            self.headers.get("Host", ""),
+            urlparse(self.console_origin()).hostname,
+            urlparse(self.preferred_console_base()).hostname,
+        ):
+            hostname = urlparse(f"http://{raw}" if raw and "://" not in str(raw) else str(raw or "")).hostname
+            if hostname:
+                hosts.add(hostname)
+        return hosts
 
     def handle_proxy(self, request, *, method: str) -> None:
 
@@ -3486,12 +3511,16 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
         extra_headers: dict[str, str] = {}
+        extra_cookies = [
+            f"{LAST_PROXY_APP_COOKIE}={quote(app_id)}; Path=/; SameSite=Lax; Max-Age=43200"
+        ]
         supplied_token = parse_qs(request.query).get("access_token", [""])[0]
         if supplied_token and self.validate_proxy_token(supplied_token, app_id):
-            extra_headers["Set-Cookie"] = (
+            extra_cookies.append(
                 f"rocky_proxy_{app_id}={supplied_token}; "
                 f"Path=/proxy/{quote(app_id)}/; HttpOnly; SameSite=Lax"
             )
+        public_hosts = self._proxy_public_hosts()
         base = self.proxy_base_for_app(app_id)
         if not base:
             self.send_error_page(404, "Unknown proxied application")
@@ -3533,11 +3562,18 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     {name: value for name, value in response.headers.items()},
                     app_id,
                     base,
+                    public_hosts=public_hosts,
                 )
                 content_type = str(headers.get("Content-Type") or headers.get("content-type") or "")
                 payload = rewrite_html_root_paths(payload, app_id, content_type)
                 headers["Content-Length"] = str(len(payload))
-                self.proxy_response(response.status, payload, headers, extra_headers=extra_headers)
+                self.proxy_response(
+                    response.status,
+                    payload,
+                    headers,
+                    extra_headers=extra_headers,
+                    extra_cookies=extra_cookies,
+                )
                 return
         except HTTPError as exc:
             payload = exc.read()
@@ -3545,11 +3581,18 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 {name: value for name, value in exc.headers.items()},
                 app_id,
                 base,
+                public_hosts=public_hosts,
             )
             content_type = str(headers.get("Content-Type") or headers.get("content-type") or "")
             payload = rewrite_html_root_paths(payload, app_id, content_type)
             headers["Content-Length"] = str(len(payload))
-            self.proxy_response(exc.code, payload, headers, extra_headers=extra_headers)
+            self.proxy_response(
+                exc.code,
+                payload,
+                headers,
+                extra_headers=extra_headers,
+                extra_cookies=extra_cookies,
+            )
             return
         except URLError as exc:
             self.send_json_error(HTTPStatus.BAD_GATEWAY, "proxy_failed", detail=str(exc))
@@ -3599,7 +3642,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 safe_app_id = html.escape(eid)
                 app_id_attr = f' data-app-id="{safe_app_id}"' if eid != "transfer-stack" else ""
                 actions_html += (
-                    f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
+                    f'<a href="{safe_url}" target="_blank" rel="noopener" '
                     f'class="{launch_cls}"{app_id_attr}>&#x25BA; LAUNCH</a>'
                 )
             if entry.get("qr_url") and entry.get("mobile_url"):
@@ -3737,7 +3780,7 @@ document.querySelectorAll('a.btn-launch').forEach((link) => {{
     const url = link.getAttribute('href');
     if (!url) return;
     event.preventDefault();
-    window.open(url, '_blank', 'noopener,noreferrer');
+    window.open(url, '_blank', 'noopener');
   }});
 }});
 
