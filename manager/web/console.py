@@ -52,7 +52,19 @@ from manager.runtime.app_proxy import (
     LAST_PROXY_APP_COOKIE,
     decode_upstream_payload,
     filter_browser_cookies_for_upstream,
+    is_connection_refused,
     is_public_proxy_app,
+    leaked_proxy_app_id,
+    proxied_app_login_location,
+    proxy_app_id_from_path,
+    rewrite_arr_initialize_json,
+    rewrite_html_root_paths,
+    rewrite_upstream_headers,
+    select_upstream_request_headers,
+    static_asset_from_login_query,
+    suppress_login_redirect_for_asset,
+    upstream_starting_page,
+    wants_upstream_wait_page,
     leaked_proxy_app_id,
     proxied_app_login_location,
     proxy_app_id_from_path,
@@ -3628,63 +3640,85 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
         proxy_request.add_header("X-Forwarded-Proto", "http")
         proxy_request.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
-        try:
-            with PROXY_OPENER.open(proxy_request, timeout=20) as response:
-                payload = decode_upstream_payload(response.read(), response.headers)
+        deadline = time.time() + 1.8
+        last_url_error: URLError | None = None
+        while True:
+            try:
+                with PROXY_OPENER.open(proxy_request, timeout=20) as response:
+                    payload = decode_upstream_payload(response.read(), response.headers)
+                    headers = rewrite_upstream_headers(
+                        {name: value for name, value in response.headers.items()},
+                        app_id,
+                        base,
+                        public_hosts=public_hosts,
+                    )
+                    payload, headers = self._rewrite_proxied_payload(
+                        payload, headers, app_id, target_path
+                    )
+                    self.proxy_response(
+                        response.status,
+                        payload,
+                        headers,
+                        extra_headers=extra_headers,
+                        extra_cookies=extra_cookies,
+                    )
+                    return
+            except HTTPError as exc:
+                payload = decode_upstream_payload(exc.read(), exc.headers)
                 headers = rewrite_upstream_headers(
-                    {name: value for name, value in response.headers.items()},
+                    {name: value for name, value in exc.headers.items()},
                     app_id,
                     base,
                     public_hosts=public_hosts,
                 )
+                location = str(headers.get("Location") or headers.get("location") or "")
+                if suppress_login_redirect_for_asset(target_path, location):
+                    headers = {
+                        name: value
+                        for name, value in headers.items()
+                        if name.lower() != "location"
+                    }
+                    self.proxy_response(
+                        HTTPStatus.NOT_FOUND,
+                        b"",
+                        {"Content-Type": "text/plain; charset=utf-8"},
+                        extra_headers=extra_headers,
+                        extra_cookies=extra_cookies,
+                    )
+                    return
                 payload, headers = self._rewrite_proxied_payload(
                     payload, headers, app_id, target_path
                 )
                 self.proxy_response(
-                    response.status,
+                    exc.code,
                     payload,
                     headers,
                     extra_headers=extra_headers,
                     extra_cookies=extra_cookies,
                 )
                 return
-        except HTTPError as exc:
-            payload = decode_upstream_payload(exc.read(), exc.headers)
-            headers = rewrite_upstream_headers(
-                {name: value for name, value in exc.headers.items()},
-                app_id,
-                base,
-                public_hosts=public_hosts,
-            )
-            location = str(headers.get("Location") or headers.get("location") or "")
-            if suppress_login_redirect_for_asset(target_path, location):
-                headers = {
-                    name: value
-                    for name, value in headers.items()
-                    if name.lower() != "location"
-                }
-                self.proxy_response(
-                    HTTPStatus.NOT_FOUND,
-                    b"",
-                    {"Content-Type": "text/plain; charset=utf-8"},
-                    extra_headers=extra_headers,
-                    extra_cookies=extra_cookies,
-                )
-                return
-            payload, headers = self._rewrite_proxied_payload(
-                payload, headers, app_id, target_path
-            )
+            except URLError as exc:
+                last_url_error = exc
+                if not is_connection_refused(exc) or time.time() >= deadline:
+                    break
+                time.sleep(0.45)
+        if last_url_error is not None and wants_upstream_wait_page(
+            method, target_path, self.headers.get("Accept", "")
+        ):
             self.proxy_response(
-                exc.code,
-                payload,
-                headers,
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                upstream_starting_page(app_id),
+                {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Cache-Control": "no-store",
+                    "Retry-After": "2",
+                },
                 extra_headers=extra_headers,
                 extra_cookies=extra_cookies,
             )
             return
-        except URLError as exc:
-            self.send_json_error(HTTPStatus.BAD_GATEWAY, "proxy_failed", detail=str(exc))
-            return
+        self.send_json_error(HTTPStatus.BAD_GATEWAY, "proxy_failed", detail=str(last_url_error or "proxy_failed"))
+        return
 
     def handle_apps(self) -> None:
 
@@ -3849,9 +3883,13 @@ function queueAppStart(appId) {{
   }}).then(async (response) => {{
     const payload = await response.json().catch(() => ({{}}));
     if (feedback) {{
-      feedback.textContent = response.ok && payload.ok !== false
-        ? JSON.stringify(payload, null, 2)
-        : ('Launch failed for ' + appId + ': ' + (payload.error || payload.detail || response.status));
+      if (response.ok && payload.ok !== false) {{
+        feedback.textContent = payload.status === 'starting'
+          ? ((payload.app_id || appId) + ' is starting. Leave the new tab open; it retries until the app is ready.')
+          : ('Opened ' + (payload.app_id || appId) + '.');
+      }} else {{
+        feedback.textContent = 'Launch failed for ' + appId + ': ' + (payload.error || payload.detail || response.status);
+      }}
     }}
   }}).catch((error) => {{
     if (feedback) feedback.textContent = 'Launch failed for ' + appId + ': ' + error;

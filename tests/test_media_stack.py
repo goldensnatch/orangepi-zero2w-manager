@@ -335,13 +335,32 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("suppress_login_redirect_for_asset", proxy_fn)
         self.assertIn("select_upstream_request_headers", proxy_fn)
         self.assertIn("decode_upstream_payload", proxy_fn)
+        self.assertIn("upstream_starting_page", proxy_fn)
+        self.assertIn("wants_upstream_wait_page", proxy_fn)
         self.assertIn('Accept-Encoding", "identity"', proxy_fn)
         self.assertNotIn('("Content-Type", "User-Agent")', proxy_fn)
+        from manager.runtime.app_proxy import (
+            is_connection_refused,
+            upstream_starting_page,
+            wants_upstream_wait_page,
+        )
+
+        self.assertTrue(is_connection_refused(OSError(111, "Connection refused")))
+        self.assertTrue(
+            wants_upstream_wait_page("GET", "/", "text/html,application/xhtml+xml")
+        )
+        self.assertFalse(
+            wants_upstream_wait_page("GET", "/api/v1/system/status", "application/json")
+        )
+        wait_html = upstream_starting_page("jellyseerr")
+        self.assertIn(b"Starting Jellyseerr", wait_html)
+        self.assertIn(b'meta http-equiv="refresh" content="2"', wait_html)
 
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         self.assertIn('target="_blank" rel="noopener"', source)
         self.assertIn("window.open(url, '_blank', 'noopener')", source)
+        self.assertIn("Leave the new tab open", source)
         self.assertNotIn("noopener,noreferrer", source)
         self.assertNotIn("window.location.href = url", source)
         self.assertNotIn("startAndOpenApp", source)

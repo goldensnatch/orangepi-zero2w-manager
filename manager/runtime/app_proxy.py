@@ -6,7 +6,7 @@ import re
 import zlib
 from urllib.parse import parse_qsl, urlencode, urlparse
 
-from manager.runtime.media_stack import media_app_ids
+from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids
 
 
 HOP_BY_HOP_HEADERS = {
@@ -325,6 +325,54 @@ def decode_upstream_payload(payload: bytes, headers) -> bytes:
     except (OSError, EOFError, zlib.error):
         return bytes(body)
     return bytes(body)
+
+
+def is_connection_refused(exc: BaseException) -> bool:
+    reason = getattr(exc, "reason", None)
+    errno = getattr(reason, "errno", None) or getattr(exc, "errno", None)
+    if errno in {111, 61}:
+        return True
+    text = str(exc).lower()
+    return "connection refused" in text or "[errno 111]" in text
+
+
+def wants_upstream_wait_page(method: str, path: str, accept: str = "") -> bool:
+    if str(method or "GET").upper() != "GET":
+        return False
+    normalized = str(path or "/")
+    if "/api/" in normalized or normalized.endswith(".json"):
+        return False
+    if is_static_asset_path(normalized):
+        return False
+    accept_l = str(accept or "").lower()
+    if "application/json" in accept_l and "text/html" not in accept_l:
+        return False
+    return True
+
+
+def proxied_app_display_name(app_id: str) -> str:
+    spec = MEDIA_STACK_APPS.get(str(app_id or ""))
+    if spec:
+        return str(spec["name"])
+    if app_id == "transfer-stack":
+        return "Torrentz"
+    label = re.sub(r"[^A-Za-z0-9 _.-]", "", str(app_id or "app"))
+    return label or "app"
+
+
+def upstream_starting_page(app_id: str) -> bytes:
+    name = proxied_app_display_name(app_id)
+    return (
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta http-equiv=\"refresh\" content=\"2\">"
+        f"<title>Starting {name}</title>"
+        "<style>body{font-family:system-ui,sans-serif;background:#111;color:#eee;"
+        "display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}"
+        "main{text-align:center;max-width:28rem;padding:1.5rem}p{color:#aaa;line-height:1.45}</style>"
+        f"</head><body><main><h1>Starting {name}</h1>"
+        "<p>The container is up. Waiting for the app to accept connections. "
+        "This page retries automatically.</p></main></body></html>"
+    ).encode("utf-8")
 
 
 def proxy_prefix(app_id: str) -> str:
