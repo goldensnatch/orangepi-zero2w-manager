@@ -52,6 +52,19 @@ class MediaStackTests(unittest.TestCase):
             self.assertEqual(service["docker_container"], spec["container"])
             self.assertEqual(service["url"], spec["local_url"])
 
+    def test_mode_permission_setup_skips_missing_user(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "ensure_mode_config_permissions",
+            ROOT / "scripts" / "ensure_mode_config_permissions.py",
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertIsNone(module.resolve_owner("definitely-not-a-real-rocky-user", None))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -336,9 +336,16 @@ def chown_mode_config_path(path: Path) -> None:
         return
 
 
+def _try_chmod(path: Path, mode: int) -> None:
+    try:
+        path.chmod(mode)
+    except OSError:
+        return
+
+
 def write_mode_config_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(mode=0o775, parents=True, exist_ok=True)
-    path.parent.chmod(0o775)
+    _try_chmod(path.parent, 0o775)
     chown_mode_config_path(path.parent)
     fd, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
@@ -353,10 +360,10 @@ def write_mode_config_json(path: Path, payload: dict[str, object]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        temporary_path.chmod(0o664)
+        _try_chmod(temporary_path, 0o664)
         chown_mode_config_path(temporary_path)
         os.replace(temporary_path, path)
-        path.chmod(0o664)
+        _try_chmod(path, 0o664)
         chown_mode_config_path(path)
     except Exception:
         try:
@@ -368,17 +375,23 @@ def write_mode_config_json(path: Path, payload: dict[str, object]) -> None:
 
 def ensure_mode_config_files() -> None:
     path = CURRENT_MODE_REQUEST_PATH
-    path.parent.mkdir(mode=0o775, parents=True, exist_ok=True)
-    path.parent.chmod(0o775)
+    try:
+        path.parent.mkdir(mode=0o775, parents=True, exist_ok=True)
+    except OSError:
+        return
+    _try_chmod(path.parent, 0o775)
     chown_mode_config_path(path.parent)
     if not path.exists():
-        write_mode_config_json(
-            path,
-            {"version": 1, "selected_mode_id": "safe", "override_flags": {}},
-        )
-    else:
-        path.chmod(0o664)
-        chown_mode_config_path(path)
+        try:
+            write_mode_config_json(
+                path,
+                {"version": 1, "selected_mode_id": "safe", "override_flags": {}},
+            )
+        except OSError:
+            return
+        return
+    _try_chmod(path, 0o664)
+    chown_mode_config_path(path)
 
 
 def shell_output(command: list[str], timeout: float = 4.0) -> str:
@@ -3690,10 +3703,14 @@ document.getElementById('transfer-form').addEventListener('submit', async (event
         btn.className = 'mode-pill' + (active ? ' active' : '');
         if (!active) btn.addEventListener('click', async () => {{
           fb.textContent = 'Switching to ' + (m.label || m.mode_id) + '...';
-          const r = await fetch('/api/mode/select', {{method:'POST',headers:{{'Content-Type':'application/json','X-Rocky-CSRF':csrf}},body:JSON.stringify({{selected_mode_id:m.mode_id,reason:'browser_mode_selector'}})}});
-          const j = await r.json();
-          fb.textContent = j.ok ? '✓ Mode set to ' + m.mode_id : JSON.stringify(j);
-          if (j.ok) setTimeout(load, 2000);
+          try {{
+            const r = await fetch('/api/mode/select', {{method:'POST',headers:{{'Content-Type':'application/json','X-Rocky-CSRF':csrf}},body:JSON.stringify({{selected_mode_id:m.mode_id,reason:'browser_mode_selector'}})}});
+            const j = await r.json();
+            fb.textContent = j.ok ? '✓ Mode set to ' + m.mode_id : JSON.stringify(j);
+            if (j.ok) setTimeout(load, 2000);
+          }} catch (err) {{
+            fb.textContent = 'Mode switch failed: console is not reachable (' + err + '). Check rocky-web.service.';
+          }}
         }});
         pillRow.appendChild(btn);
       }}
@@ -4285,7 +4302,10 @@ def main() -> None:
 
 
 
-    ensure_mode_config_files()
+    try:
+        ensure_mode_config_files()
+    except OSError:
+        print("Unable to prepare mode config files; continuing")
 
     server = ThreadingHTTPServer((HOST, PORT), RockyConsoleHandler)
 

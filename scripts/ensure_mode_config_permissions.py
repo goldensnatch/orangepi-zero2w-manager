@@ -14,9 +14,17 @@ DEFAULT_CURRENT_MODE = DEFAULT_CONFIG_DIR / "current-mode.json"
 DEFAULT_OWNER = "rocky-web"
 
 
-def resolve_owner(owner: str, group: str | None) -> tuple[int, int]:
-    user = pwd.getpwnam(owner)
-    gid = grp.getgrnam(group).gr_gid if group else user.pw_gid
+def resolve_owner(owner: str, group: str | None) -> tuple[int, int] | None:
+    try:
+        user = pwd.getpwnam(owner)
+    except KeyError:
+        return None
+    gid = user.pw_gid
+    if group:
+        try:
+            gid = grp.getgrnam(group).gr_gid
+        except KeyError:
+            pass
     return user.pw_uid, gid
 
 
@@ -37,14 +45,20 @@ def main() -> int:
     parser.add_argument("--current-mode", type=Path, default=DEFAULT_CURRENT_MODE)
     args = parser.parse_args()
 
-    uid, gid = resolve_owner(args.owner, args.group)
-    args.config_dir.mkdir(mode=0o775, parents=True, exist_ok=True)
-    os.chown(args.config_dir, uid, gid)
-    args.config_dir.chmod(0o775)
-
-    ensure_file(args.current_mode)
-    os.chown(args.current_mode, uid, gid)
-    args.current_mode.chmod(0o664)
+    try:
+        args.config_dir.mkdir(mode=0o775, parents=True, exist_ok=True)
+        ensure_file(args.current_mode)
+        owner = resolve_owner(args.owner, args.group)
+        if owner is not None:
+            uid, gid = owner
+            os.chown(args.config_dir, uid, gid)
+            args.config_dir.chmod(0o775)
+            os.chown(args.current_mode, uid, gid)
+            args.current_mode.chmod(0o664)
+        else:
+            print(f"skipping mode-config chown: user {args.owner!r} does not exist")
+    except OSError as exc:
+        print(f"mode-config permissions setup skipped: {exc}")
     return 0
 
 
