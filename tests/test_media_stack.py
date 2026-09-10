@@ -204,6 +204,23 @@ class MediaStackTests(unittest.TestCase):
         )
         self.assertEqual(dual_base.count(b"<base "), 1)
         self.assertIn(b'<base href="/proxy/prowlarr/">', dual_base)
+        jellyfin_html = rewrite_html_root_paths(
+            b'<html><head><base href="/web/"></head><link rel="stylesheet" href="main.css"></html>',
+            "jellyfin",
+            "text/html",
+        )
+        self.assertIn(b'<base href="/proxy/jellyfin/web/">', jellyfin_html)
+        self.assertNotIn(b'<base href="/proxy/jellyfin/">', jellyfin_html)
+        from manager.runtime.app_proxy import map_jellyfin_upstream_path
+
+        self.assertEqual(map_jellyfin_upstream_path("/"), "/web/")
+        self.assertEqual(
+            map_jellyfin_upstream_path("/46967.bundle.js"),
+            "/web/46967.bundle.js",
+        )
+        self.assertEqual(map_jellyfin_upstream_path("/manifest.json"), "/web/manifest.json")
+        self.assertEqual(map_jellyfin_upstream_path("/web/main.css"), "/web/main.css")
+        self.assertEqual(map_jellyfin_upstream_path("/Users/authenticatebyname"), "/Users/authenticatebyname")
 
     def test_entertainment_proxy_skips_rocky_login(self) -> None:
         from manager.runtime.app_proxy import (
@@ -337,6 +354,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("decode_upstream_payload", proxy_fn)
         self.assertIn("upstream_starting_page", proxy_fn)
         self.assertIn("wants_upstream_wait_page", proxy_fn)
+        self.assertIn("map_jellyfin_upstream_path", proxy_fn)
         self.assertIn('Accept-Encoding", "identity"', proxy_fn)
         self.assertNotIn('("Content-Type", "User-Agent")', proxy_fn)
         from manager.runtime.app_proxy import (

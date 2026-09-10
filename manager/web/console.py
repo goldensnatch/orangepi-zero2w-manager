@@ -55,6 +55,7 @@ from manager.runtime.app_proxy import (
     is_connection_refused,
     is_public_proxy_app,
     leaked_proxy_app_id,
+    map_jellyfin_upstream_path,
     proxied_app_login_location,
     proxy_app_id_from_path,
     rewrite_arr_initialize_json,
@@ -65,15 +66,6 @@ from manager.runtime.app_proxy import (
     suppress_login_redirect_for_asset,
     upstream_starting_page,
     wants_upstream_wait_page,
-    leaked_proxy_app_id,
-    proxied_app_login_location,
-    proxy_app_id_from_path,
-    rewrite_arr_initialize_json,
-    rewrite_html_root_paths,
-    rewrite_upstream_headers,
-    select_upstream_request_headers,
-    static_asset_from_login_query,
-    suppress_login_redirect_for_asset,
 )
 from manager.runtime.service_catalog import ServiceCatalog
 from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids, media_launch_target
@@ -3613,6 +3605,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 remainder = asset.lstrip("/")
                 forwarded_query = ""
         target_path = "/" + remainder if remainder else "/"
+        if app_id == "jellyfin":
+            target_path = map_jellyfin_upstream_path(target_path)
         target = base.rstrip("/") + target_path
         if forwarded_query:
             parsed_query = parse_qs(forwarded_query, keep_blank_values=True)

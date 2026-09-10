@@ -162,8 +162,9 @@ def rewrite_arr_initialize_json(
 
 def proxy_bridge_script(app_id: str) -> str:
     prefix = json.dumps(proxy_prefix(app_id))
+    base = json.dumps(proxy_document_base(app_id))
     return (
-        "<script>(function(p){"
+        "<script>(function(p,b){"
         "if(window.__rockyPrefix)return;window.__rockyPrefix=p;"
         "function skip(path){"
         "var s=['/apps','/logs','/files','/view','/download','/api/runtime','/api/security',"
@@ -175,14 +176,17 @@ def proxy_bridge_script(app_id: str) -> str:
         "if(typeof URL!=='undefined'&&u instanceof URL)return rewrite(u.href);"
         "if(typeof u!=='string')return u;"
         "try{"
-        "var x=new URL(u,location.origin+p+'/');"
+        "var x=new URL(u,location.origin+b);"
         "if(x.host!==location.host)return u;"
         "if(skip(x.pathname))return u;"
         "var path=x.pathname,search=x.search;"
         "var ru=x.searchParams.get('returnUrl')||x.searchParams.get('returnurl');"
         "if((path===p+'/login'||path.slice(-6)==='/login')&&ru&&/\\.(js|css|map|woff2?|png|svg|ico)(\\?|$)/i.test(ru)){"
         "path=ru.charAt(0)==='/'?ru:'/'+ru;search='';}"
-        "if(path!==p&&path.indexOf(p+'/')!==0)path=p+(path.charAt(0)==='/'?path:'/'+path);"
+        "if(path!==p&&path.indexOf(p+'/')!==0){"
+        "if(b.length>p.length+1&&path.charAt(0)==='/'&&/\\.(js|css|json|map|woff2?|png|svg|ico)(\\?|$)/i.test(path))"
+        "path=b.replace(/\\/$/,'')+path;"
+        "else path=p+(path.charAt(0)==='/'?path:'/'+path);}"
         "var next=path+search+x.hash;"
         "if(x.protocol==='ws:'||x.protocol==='wss:')return x.protocol+'//'+location.host+next;"
         "if(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u))return x.protocol+'//'+location.host+next;"
@@ -224,13 +228,12 @@ def proxy_bridge_script(app_id: str) -> str:
         "XMLHttpRequest.prototype.open=function(m,u){arguments[1]=rewrite(u);return o.apply(this,arguments);};"
         "if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,pr){"
         "return pr===undefined?new W(rewrite(u)):new W(rewrite(u),pr);};window.WebSocket.prototype=W.prototype;}"
-        "})(" + prefix + ");</script>"
+        "})(" + prefix + "," + base + ");</script>"
     )
 
 
 def inject_proxy_bridge(html: str, app_id: str) -> str:
-    prefix = proxy_prefix(app_id)
-    snippet = f'<base href="{prefix}/">' + proxy_bridge_script(app_id)
+    snippet = f'<base href="{proxy_document_base(app_id)}">' + proxy_bridge_script(app_id)
     lower = html.lower()
     marker = "<head>"
     idx = lower.find(marker)
@@ -377,6 +380,28 @@ def upstream_starting_page(app_id: str) -> bytes:
 
 def proxy_prefix(app_id: str) -> str:
     return f"/proxy/{app_id}"
+
+
+def proxy_document_base(app_id: str) -> str:
+    prefix = proxy_prefix(app_id)
+    if str(app_id) == "jellyfin":
+        return f"{prefix}/web/"
+    return f"{prefix}/"
+
+
+def map_jellyfin_upstream_path(path: str) -> str:
+    """Jellyfin serves the SPA under /web/; keep API routes at the server root."""
+    normalized = str(path or "/") or "/"
+    if not normalized.startswith("/"):
+        normalized = "/" + normalized
+    if normalized in {"/", "/web"}:
+        return "/web/"
+    if normalized.startswith("/web/"):
+        return normalized
+    name = normalized.rsplit("/", 1)[-1].split("?", 1)[0].lower()
+    if name in {"manifest.json", "serviceworker.js", "service-worker.js"} or is_static_asset_path(normalized):
+        return "/web" + normalized
+    return normalized
 
 
 def _is_rocky_console_path(path: str) -> bool:
