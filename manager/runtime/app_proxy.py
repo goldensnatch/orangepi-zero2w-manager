@@ -105,6 +105,52 @@ def leaked_proxy_app_id(
     return app_id
 
 
+def is_static_asset_path(path: str) -> bool:
+    return bool(_STATIC_ASSET_RE.search(str(path or "")))
+
+
+def suppress_login_redirect_for_asset(path: str, location: str) -> bool:
+    """Do not send browsers to /login HTML when a webpack chunk 302s."""
+    if not is_static_asset_path(path):
+        return False
+    loc_path = (urlparse(str(location or "")).path or "").rstrip("/").lower()
+    return loc_path.endswith("/login") or loc_path == "login"
+
+
+def rewrite_arr_initialize_json(
+    payload: bytes,
+    app_id: str,
+    content_type: str = "",
+    path: str = "",
+) -> bytes:
+    """Force *arr initialize.json onto /proxy/<app> so webpack chunks stay on-prefix."""
+    resource = str(path or "").split("?", 1)[0]
+    kind = str(content_type or "").lower()
+    looks_like_init = resource.endswith("initialize.json")
+    if not looks_like_init and "json" not in kind:
+        return payload
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return payload
+    if not isinstance(data, dict):
+        return payload
+    if not looks_like_init and "urlBase" not in data:
+        return payload
+    prefix = proxy_prefix(app_id)
+    previous_base = str(data.get("urlBase") or "")
+    api_root = str(data.get("apiRoot") or "")
+    if previous_base and api_root.startswith(previous_base):
+        api_root = api_root[len(previous_base):] or "/api/v1"
+    if not api_root:
+        api_root = "/api/v1"
+    if not api_root.startswith("/"):
+        api_root = "/" + api_root
+    data["urlBase"] = prefix
+    data["apiRoot"] = prefix + api_root
+    return json.dumps(data).encode("utf-8")
+
+
 def proxy_bridge_script(app_id: str) -> str:
     prefix = json.dumps(proxy_prefix(app_id))
     return (
@@ -133,7 +179,11 @@ def proxy_bridge_script(app_id: str) -> str:
         "if(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u))return x.protocol+'//'+location.host+next;"
         "return next;"
         "}catch(e){return u;}}"
-        "function pin(v){if(v&&typeof v==='object'){try{v.urlBase=p;}catch(e){}}return v;}"
+        "function lock(obj,key,val){try{Object.defineProperty(obj,key,{configurable:true,enumerable:true,"
+        "get:function(){return val;},set:function(){}});}catch(e){try{obj[key]=val;}catch(e2){}}}"
+        "function pin(v){if(!v||typeof v!=='object')return v;lock(v,'urlBase',p);"
+        "var root=v.apiRoot;if(typeof root==='string'&&root.indexOf(p)!==0){"
+        "lock(v,'apiRoot',root.charAt(0)==='/'?p+root:p+'/'+root);}return v;}"
         "['Prowlarr','Radarr','Sonarr','Lidarr','Readarr','Whisparr'].forEach(function(n){"
         "var cur=window[n];"
         "try{Object.defineProperty(window,n,{configurable:true,get:function(){return cur;},"
@@ -151,9 +201,16 @@ def proxy_bridge_script(app_id: str) -> str:
         "if(n&&(String(n).toLowerCase()==='src'||String(n).toLowerCase()==='href'))v=rewrite(String(v));"
         "return sa.call(this,n,v);};"
         "var f=window.fetch;"
-        "if(f)window.fetch=function(i,n){if(typeof i==='string'||(typeof URL!=='undefined'&&i instanceof URL)"
+        "if(f)window.fetch=function(i,n){"
+        "if(typeof i==='string'||(typeof URL!=='undefined'&&i instanceof URL)"
         "||(typeof Request!=='undefined'&&i instanceof Request))i=rewrite(i);"
-        "return f.call(this,i,n);};"
+        "return f.call(this,i,n).then(function(r){"
+        "var u='';try{u=typeof i==='string'?i:(i&&i.url)||'';}catch(e){}"
+        "if(!/initialize\\.json/i.test(String(u)))return r;"
+        "return r.clone().text().then(function(t){"
+        "try{var data=JSON.parse(t);pin(data);"
+        "return new Response(JSON.stringify(data),{status:r.status,statusText:r.statusText,headers:r.headers});}"
+        "catch(e){return r;}});});};"
         "var o=XMLHttpRequest.prototype.open;"
         "XMLHttpRequest.prototype.open=function(m,u){arguments[1]=rewrite(u);return o.apply(this,arguments);};"
         "if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,pr){"
@@ -320,6 +377,7 @@ def rewrite_html_root_paths(payload: bytes, app_id: str, content_type: str) -> b
     text = _QUOTED_ROOT_RE.sub(rf"\g<quote>{prefix}/\g<path>\g<quote>", text)
     text = _ARR_URLBASE_RE.sub(rf'\1\2{prefix}\2', text)
     text = text.replace("__URL_BASE__", prefix)
+    text = re.sub(r"(?is)<base\b[^>]*>", "", text)
     text = inject_proxy_bridge(text, app_id)
     return text.encode("utf-8")
 

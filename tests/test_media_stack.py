@@ -148,6 +148,62 @@ class MediaStackTests(unittest.TestCase):
             "application/json",
         )
         self.assertEqual(json_payload, b'{"save_path":"/data/downloads","apiRoot":"/api/v1"}')
+        from manager.runtime.app_proxy import (
+            rewrite_arr_initialize_json,
+            suppress_login_redirect_for_asset,
+        )
+
+        rewritten_init = json.loads(
+            rewrite_arr_initialize_json(
+                b'{\n "apiRoot": "/api/v1",\n "urlBase": "",\n "theme": "auto"\n}\n',
+                "prowlarr",
+                "application/json",
+                "/initialize.json",
+            )
+        )
+        self.assertEqual(rewritten_init["urlBase"], "/proxy/prowlarr")
+        self.assertEqual(rewritten_init["apiRoot"], "/proxy/prowlarr/api/v1")
+        self.assertEqual(rewritten_init["theme"], "auto")
+        prefixed_init = json.loads(
+            rewrite_arr_initialize_json(
+                b'{"apiRoot":"/prowlarr/api/v1","urlBase":"/prowlarr"}',
+                "prowlarr",
+                "application/json",
+                "/initialize.json",
+            )
+        )
+        self.assertEqual(prefixed_init["urlBase"], "/proxy/prowlarr")
+        self.assertEqual(prefixed_init["apiRoot"], "/proxy/prowlarr/api/v1")
+        untouched_qbit = rewrite_arr_initialize_json(
+            b'{"save_path":"/data/downloads","apiRoot":"/api/v1"}',
+            "prowlarr",
+            "application/json",
+            "/api/v2/app/preferences",
+        )
+        self.assertEqual(
+            untouched_qbit,
+            b'{"save_path":"/data/downloads","apiRoot":"/api/v1"}',
+        )
+        self.assertTrue(
+            suppress_login_redirect_for_asset(
+                "/194-4b970a3e3dd59743b5ea.js",
+                "/login?returnUrl=%2F194-4b970a3e3dd59743b5ea.js",
+            )
+        )
+        self.assertTrue(
+            suppress_login_redirect_for_asset(
+                "/194-4b970a3e3dd59743b5ea.js",
+                "/proxy/prowlarr/login?returnUrl=%2F194-4b970a3e3dd59743b5ea.js",
+            )
+        )
+        self.assertFalse(suppress_login_redirect_for_asset("/", "/login?returnUrl=%2F"))
+        dual_base = rewrite_html_root_paths(
+            b'<html><head><base href="/"></head></html>',
+            "prowlarr",
+            "text/html",
+        )
+        self.assertEqual(dual_base.count(b"<base "), 1)
+        self.assertIn(b'<base href="/proxy/prowlarr/">', dual_base)
 
     def test_entertainment_proxy_skips_rocky_login(self) -> None:
         from manager.runtime.app_proxy import (
@@ -239,6 +295,8 @@ class MediaStackTests(unittest.TestCase):
         proxy_fn = source.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
         self.assertIn("is_public_proxy_app(app_id)", proxy_fn)
         self.assertNotIn("/login?next=", proxy_fn)
+        self.assertIn("rewrite_arr_initialize_json", source)
+        self.assertIn("suppress_login_redirect_for_asset", proxy_fn)
 
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")

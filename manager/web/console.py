@@ -55,9 +55,11 @@ from manager.runtime.app_proxy import (
     leaked_proxy_app_id,
     proxied_app_login_location,
     proxy_app_id_from_path,
+    rewrite_arr_initialize_json,
     rewrite_html_root_paths,
     rewrite_upstream_headers,
     static_asset_from_login_query,
+    suppress_login_redirect_for_asset,
 )
 from manager.runtime.service_catalog import ServiceCatalog
 from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids, media_launch_target
@@ -3548,6 +3550,19 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 hosts.add(hostname)
         return hosts
 
+    def _rewrite_proxied_payload(
+        self,
+        payload: bytes,
+        headers: dict[str, str],
+        app_id: str,
+        target_path: str,
+    ) -> tuple[bytes, dict[str, str]]:
+        content_type = str(headers.get("Content-Type") or headers.get("content-type") or "")
+        payload = rewrite_html_root_paths(payload, app_id, content_type)
+        payload = rewrite_arr_initialize_json(payload, app_id, content_type, target_path)
+        headers["Content-Length"] = str(len(payload))
+        return payload, headers
+
     def handle_proxy(self, request, *, method: str) -> None:
 
         proxy_path = request.path[len("/proxy/"):]
@@ -3621,9 +3636,9 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     base,
                     public_hosts=public_hosts,
                 )
-                content_type = str(headers.get("Content-Type") or headers.get("content-type") or "")
-                payload = rewrite_html_root_paths(payload, app_id, content_type)
-                headers["Content-Length"] = str(len(payload))
+                payload, headers = self._rewrite_proxied_payload(
+                    payload, headers, app_id, target_path
+                )
                 self.proxy_response(
                     response.status,
                     payload,
@@ -3640,9 +3655,24 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 base,
                 public_hosts=public_hosts,
             )
-            content_type = str(headers.get("Content-Type") or headers.get("content-type") or "")
-            payload = rewrite_html_root_paths(payload, app_id, content_type)
-            headers["Content-Length"] = str(len(payload))
+            location = str(headers.get("Location") or headers.get("location") or "")
+            if suppress_login_redirect_for_asset(target_path, location):
+                headers = {
+                    name: value
+                    for name, value in headers.items()
+                    if name.lower() != "location"
+                }
+                self.proxy_response(
+                    HTTPStatus.NOT_FOUND,
+                    b"",
+                    {"Content-Type": "text/plain; charset=utf-8"},
+                    extra_headers=extra_headers,
+                    extra_cookies=extra_cookies,
+                )
+                return
+            payload, headers = self._rewrite_proxied_payload(
+                payload, headers, app_id, target_path
+            )
             self.proxy_response(
                 exc.code,
                 payload,
