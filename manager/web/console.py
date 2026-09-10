@@ -58,6 +58,7 @@ from manager.runtime.app_proxy import (
     rewrite_arr_initialize_json,
     rewrite_html_root_paths,
     rewrite_upstream_headers,
+    select_upstream_request_headers,
     static_asset_from_login_query,
     suppress_login_redirect_for_asset,
 )
@@ -3616,10 +3617,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         upstream = urlparse(base)
         host_override = upstream.netloc
         proxy_request = Request(target, data=body, method=method)
-        for header_name in ("Content-Type", "User-Agent"):
-            header_value = self.headers.get(header_name)
-            if header_value:
-                proxy_request.add_header(header_name, header_value)
+        for header_name, header_value in select_upstream_request_headers(self.headers):
+            proxy_request.add_header(header_name, header_value)
         cookie_header = filter_browser_cookies_for_upstream(self.headers.get("Cookie", ""))
         if cookie_header:
             proxy_request.add_header("Cookie", cookie_header)

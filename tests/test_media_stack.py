@@ -260,6 +260,31 @@ class MediaStackTests(unittest.TestCase):
             ),
             "arr=xyz",
         )
+        from manager.runtime.app_proxy import select_upstream_request_headers
+
+        forwarded = dict(
+            select_upstream_request_headers(
+                {
+                    "Host": "192.168.1.213:8090",
+                    "Cookie": "rocky_session=nope",
+                    "X-Api-Key": "arr-secret",
+                    "Authorization": "Bearer jellyfin",
+                    "Accept": "application/json",
+                    "X-Emby-Token": "emby-token",
+                    "X-Forwarded-Prefix": "spoof",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla",
+                }
+            )
+        )
+        self.assertEqual(forwarded["X-Api-Key"], "arr-secret")
+        self.assertEqual(forwarded["Authorization"], "Bearer jellyfin")
+        self.assertEqual(forwarded["X-Emby-Token"], "emby-token")
+        self.assertEqual(forwarded["Accept"], "application/json")
+        self.assertEqual(forwarded["Content-Type"], "application/json")
+        self.assertNotIn("Host", forwarded)
+        self.assertNotIn("Cookie", forwarded)
+        self.assertNotIn("X-Forwarded-Prefix", forwarded)
         from manager.runtime.app_proxy import leaked_proxy_app_id
 
         self.assertEqual(
@@ -297,6 +322,8 @@ class MediaStackTests(unittest.TestCase):
         self.assertNotIn("/login?next=", proxy_fn)
         self.assertIn("rewrite_arr_initialize_json", source)
         self.assertIn("suppress_login_redirect_for_asset", proxy_fn)
+        self.assertIn("select_upstream_request_headers", proxy_fn)
+        self.assertNotIn('("Content-Type", "User-Agent")', proxy_fn)
 
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")

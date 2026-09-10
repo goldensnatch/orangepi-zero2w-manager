@@ -20,6 +20,12 @@ HOP_BY_HOP_HEADERS = {
     "upgrade",
     "www-authenticate",
 }
+_SKIP_UPSTREAM_REQUEST_HEADERS = HOP_BY_HOP_HEADERS | {
+    "host",
+    "cookie",
+    "content-length",
+    "expect",
+}
 
 _ROOT_ATTR_RE = re.compile(
     r'(?P<attr>(?:href|src|action)\s*=\s*["\'])/(?P<path>(?!proxy/)[^"\']*)',
@@ -282,6 +288,20 @@ def filter_browser_cookies_for_upstream(cookie_header: str) -> str:
             continue
         kept.append(item)
     return "; ".join(kept)
+
+
+def select_upstream_request_headers(headers) -> list[tuple[str, str]]:
+    """Copy browser headers *arr/Jellyfin need (X-Api-Key, Authorization, …)."""
+    forwarded: list[tuple[str, str]] = []
+    items = headers.items() if hasattr(headers, "items") else []
+    for name, value in items:
+        lower = str(name or "").lower()
+        if not value or lower in _SKIP_UPSTREAM_REQUEST_HEADERS:
+            continue
+        if lower.startswith("x-forwarded-"):
+            continue
+        forwarded.append((str(name), str(value)))
+    return forwarded
 
 
 def proxy_prefix(app_id: str) -> str:
