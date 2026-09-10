@@ -3572,11 +3572,11 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             if entry.get("open_url"):
                 safe_url = html.escape(str(entry["open_url"]))
                 safe_app_id = html.escape(eid)
-                if is_media:
-                    app_id_attr = f' data-app-id="{safe_app_id}"' if eid != "transfer-stack" else ""
-                    actions_html += f'<a href="{safe_url}" target="_blank" rel="noopener" class="{launch_cls}"{app_id_attr}>&#x25BA; LAUNCH</a>'
-                else:
-                    actions_html += f'<button class="{launch_cls}" data-app-id="{safe_app_id}" data-open-url="{safe_url}" type="button">&#x25BA; LAUNCH</button>'
+                app_id_attr = f' data-app-id="{safe_app_id}"' if eid != "transfer-stack" else ""
+                actions_html += (
+                    f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
+                    f'class="{launch_cls}"{app_id_attr}>&#x25BA; LAUNCH</a>'
+                )
             if entry.get("qr_url") and entry.get("mobile_url"):
                 safe_qr = html.escape(str(entry["qr_url"]))
                 safe_mob = html.escape(str(entry["mobile_url"]))
@@ -3684,49 +3684,36 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 <script>
 const csrfToken = document.querySelector('meta[name="rocky-csrf-token"]').content;
 const feedback = document.getElementById('apps-feedback');
-async function startAndOpenApp(button) {{
-  const appId = button.dataset.appId;
-  const fallbackUrl = button.dataset.openUrl;
-  const oldText = button.textContent;
-  const popup = fallbackUrl ? window.open(fallbackUrl, '_blank', 'noreferrer') : null;
-  button.disabled = true;
-  button.textContent = 'Starting...';
-  try {{
-    const response = await fetch('/api/apps/launch', {{
-      method: 'POST',
-      headers: {{'Content-Type': 'application/json', 'X-Rocky-CSRF': csrfToken}},
-      body: JSON.stringify({{id: appId}})
-    }});
-    const payload = await response.json();
-    if (!response.ok || payload.ok === false) {{
-      throw new Error(payload.error || payload.detail || 'launch_failed');
+function queueAppStart(appId) {{
+  if (!appId) return;
+  fetch('/api/apps/launch', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json', 'X-Rocky-CSRF': csrfToken}},
+    body: JSON.stringify({{id: appId}})
+  }}).then(async (response) => {{
+    const payload = await response.json().catch(() => ({{}}));
+    if (feedback) {{
+      feedback.textContent = response.ok && payload.ok !== false
+        ? JSON.stringify(payload, null, 2)
+        : ('Launch failed for ' + appId + ': ' + (payload.error || payload.detail || response.status));
     }}
-    const url = payload.open_url || fallbackUrl;
-    if (url && popup) {{
-      try {{ popup.location.href = url; }} catch (e) {{}}
-    }} else if (url) {{
-      window.location.href = url;
-    }}
-    if (feedback) feedback.textContent = JSON.stringify(payload, null, 2);
-  }} catch (error) {{
+  }}).catch((error) => {{
     if (feedback) feedback.textContent = 'Launch failed for ' + appId + ': ' + error;
-  }} finally {{
-    button.disabled = false;
-    button.textContent = oldText;
-  }}
+  }});
 }}
-document.querySelectorAll('.btn-launch[data-app-id]').forEach((button) => {{
-  if (button.tagName === 'A') {{
-    button.addEventListener('click', () => {{
-      fetch('/api/apps/launch', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/json', 'X-Rocky-CSRF': csrfToken}},
-        body: JSON.stringify({{id: button.dataset.appId}})
-      }}).catch(() => {{}});
-    }});
-    return;
-  }}
-  button.addEventListener('click', () => startAndOpenApp(button));
+document.querySelectorAll('a.btn-launch').forEach((link) => {{
+  link.addEventListener('click', (event) => {{
+    queueAppStart(link.dataset.appId);
+    // Keep this tab on the Rocky console. Modified clicks already open a new tab
+    // via the browser; a plain click must not fall through to window.location.
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {{
+      return;
+    }}
+    const url = link.getAttribute('href');
+    if (!url) return;
+    event.preventDefault();
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }});
 }});
 
 function openQR(src, url) {{

@@ -95,6 +95,15 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn(b'action="/proxy/prowlarr/login"', html)
         self.assertIn(b'href="/proxy/prowlarr/Content/logo.svg"', html)
 
+    def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
+        source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
+        self.assertIn('target="_blank" rel="noopener noreferrer"', source)
+        self.assertIn("window.open(url, '_blank', 'noopener,noreferrer')", source)
+        self.assertIn("event.preventDefault();", source)
+        self.assertNotIn("window.location.href = url", source)
+        self.assertNotIn("startAndOpenApp", source)
+        self.assertNotIn("data-open-url", source)
+
     def test_mode_permission_setup_skips_missing_user(self) -> None:
         import importlib.util
 
