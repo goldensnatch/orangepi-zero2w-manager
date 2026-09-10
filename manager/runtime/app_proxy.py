@@ -192,6 +192,10 @@ def proxy_bridge_script(app_id: str) -> str:
         "if(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u))return x.protocol+'//'+location.host+next;"
         "return next;"
         "}catch(e){return u;}}"
+        "function hookHist(name){var orig=history[name];if(!orig)return;"
+        "history[name]=function(s,t,u){if(u!==undefined&&u!==null&&u!==''){"
+        "arguments[2]=rewrite(String(u));}return orig.apply(this,arguments);};}"
+        "hookHist('pushState');hookHist('replaceState');"
         "function lock(obj,key,val){try{Object.defineProperty(obj,key,{configurable:true,enumerable:true,"
         "get:function(){return val;},set:function(){}});}catch(e){try{obj[key]=val;}catch(e2){}}}"
         "function pin(v){if(!v||typeof v!=='object')return v;lock(v,'urlBase',p);"
@@ -228,6 +232,11 @@ def proxy_bridge_script(app_id: str) -> str:
         "XMLHttpRequest.prototype.open=function(m,u){arguments[1]=rewrite(u);return o.apply(this,arguments);};"
         "if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,pr){"
         "return pr===undefined?new W(rewrite(u)):new W(rewrite(u),pr);};window.WebSocket.prototype=W.prototype;}"
+        "if(p==='/proxy/jellyseerr'){function fillHost(){var h=document.getElementById('hostname');"
+        "if(!h||h.value)return;var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');"
+        "if(d&&d.set)d.set.call(h,'jellyfin');else h.value='jellyfin';"
+        "h.dispatchEvent(new Event('input',{bubbles:true}));h.dispatchEvent(new Event('change',{bubbles:true}));}"
+        "var n=0,t=setInterval(function(){fillHost();if(++n>48)clearInterval(t);},250);}"
         "})(" + prefix + "," + base + ");</script>"
     )
 
@@ -404,6 +413,43 @@ def map_jellyfin_upstream_path(path: str) -> str:
     return normalized
 
 
+def rewrite_jellyseerr_jellyfin_connect_body(
+    payload: bytes,
+    public_hosts: set[str] | None = None,
+) -> bytes:
+    """Jellyseerr talks to Jellyfin from Docker; localhost/proxy URLs cannot reach it."""
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return payload
+    if not isinstance(data, dict):
+        return payload
+    host_key = "hostname" if "hostname" in data else ("ip" if "ip" in data else None)
+    if host_key is None:
+        return payload
+    if not any(key in data for key in ("username", "apiKey", "serverType", "urlBase", "useSsl")):
+        return payload
+    raw = str(data.get(host_key) or "").strip()
+    if not raw:
+        return payload
+    candidate = raw if "://" in raw else f"http://{raw}"
+    parsed = urlparse(candidate)
+    host_only = str(parsed.hostname or raw.split("/")[0].split(":")[0]).strip().lower()
+    url_base = str(data.get("urlBase") or "")
+    public = {str(host).lower() for host in (public_hosts or set()) if host}
+    jellyfin = MEDIA_STACK_APPS["jellyfin"]
+    use_internal = host_only in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or host_only in public
+    if "proxy/jellyfin" in raw.lower() or "proxy/jellyfin" in url_base.lower():
+        use_internal = True
+    if not use_internal:
+        return payload
+    data[host_key] = str(jellyfin["compose_service"])
+    data["port"] = int(jellyfin["port"])
+    data["urlBase"] = ""
+    data["useSsl"] = False
+    return json.dumps(data).encode("utf-8")
+
+
 def _is_rocky_console_path(path: str) -> bool:
     normalized = str(path or "/") or "/"
     if normalized == "/":
@@ -490,9 +536,10 @@ def rewrite_html_root_paths(payload: bytes, app_id: str, content_type: str) -> b
         text = payload.decode("latin-1")
     text = _ROOT_ATTR_RE.sub(rf"\g<attr>{prefix}/\g<path>", text)
     text = _URL_FUNC_RE.sub(rf"url({prefix}/", text)
-    text = _QUOTED_ROOT_RE.sub(rf"\g<quote>{prefix}/\g<path>\g<quote>", text)
-    text = _ARR_URLBASE_RE.sub(rf'\1\2{prefix}\2', text)
-    text = text.replace("__URL_BASE__", prefix)
+    if app_id != "jellyseerr":
+        text = _QUOTED_ROOT_RE.sub(rf"\g<quote>{prefix}/\g<path>\g<quote>", text)
+        text = _ARR_URLBASE_RE.sub(rf'\1\2{prefix}\2', text)
+        text = text.replace("__URL_BASE__", prefix)
     text = re.sub(r"(?is)<base\b[^>]*>", "", text)
     text = inject_proxy_bridge(text, app_id)
     return text.encode("utf-8")

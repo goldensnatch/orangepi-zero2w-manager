@@ -60,6 +60,7 @@ from manager.runtime.app_proxy import (
     proxy_app_id_from_path,
     rewrite_arr_initialize_json,
     rewrite_html_root_paths,
+    rewrite_jellyseerr_jellyfin_connect_body,
     rewrite_upstream_headers,
     select_upstream_request_headers,
     static_asset_from_login_query,
@@ -3621,6 +3622,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         if method in {"POST", "PUT", "PATCH"}:
             length = int(self.headers.get("Content-Length", "0") or "0")
             body = self.rfile.read(length)
+            if app_id == "jellyseerr" and body:
+                body = rewrite_jellyseerr_jellyfin_connect_body(body, public_hosts=public_hosts)
         upstream = urlparse(base)
         host_override = upstream.netloc
         proxy_request = Request(target, data=body, method=method)

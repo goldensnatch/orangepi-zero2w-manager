@@ -221,6 +221,40 @@ class MediaStackTests(unittest.TestCase):
         self.assertEqual(map_jellyfin_upstream_path("/manifest.json"), "/web/manifest.json")
         self.assertEqual(map_jellyfin_upstream_path("/web/main.css"), "/web/main.css")
         self.assertEqual(map_jellyfin_upstream_path("/Users/authenticatebyname"), "/Users/authenticatebyname")
+        from manager.runtime.app_proxy import rewrite_jellyseerr_jellyfin_connect_body
+
+        rewritten_connect = json.loads(
+            rewrite_jellyseerr_jellyfin_connect_body(
+                b'{"hostname":"127.0.0.1","port":8096,"urlBase":"","username":"admin","serverType":1}',
+                public_hosts={"192.168.1.213"},
+            )
+        )
+        self.assertEqual(rewritten_connect["hostname"], "jellyfin")
+        self.assertEqual(rewritten_connect["port"], 8096)
+        self.assertEqual(rewritten_connect["urlBase"], "")
+        proxied_connect = json.loads(
+            rewrite_jellyseerr_jellyfin_connect_body(
+                b'{"hostname":"192.168.1.213","port":8090,"urlBase":"/proxy/jellyfin","username":"admin"}',
+                public_hosts={"192.168.1.213"},
+            )
+        )
+        self.assertEqual(proxied_connect["hostname"], "jellyfin")
+        self.assertEqual(proxied_connect["urlBase"], "")
+        untouched_connect = json.loads(
+            rewrite_jellyseerr_jellyfin_connect_body(
+                b'{"hostname":"jellyfin","port":8096,"username":"admin"}',
+                public_hosts={"192.168.1.213"},
+            )
+        )
+        self.assertEqual(untouched_connect["hostname"], "jellyfin")
+        next_html = rewrite_html_root_paths(
+            b'<html><head></head><script id="__NEXT_DATA__" type="application/json">{"page":"/setup"}</script></html>',
+            "jellyseerr",
+            "text/html",
+        )
+        self.assertIn(b'"page":"/setup"', next_html)
+        self.assertIn(b"fillHost", next_html)
+        self.assertIn(b"pushState", next_html)
 
     def test_entertainment_proxy_skips_rocky_login(self) -> None:
         from manager.runtime.app_proxy import (
@@ -355,6 +389,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("upstream_starting_page", proxy_fn)
         self.assertIn("wants_upstream_wait_page", proxy_fn)
         self.assertIn("map_jellyfin_upstream_path", proxy_fn)
+        self.assertIn("rewrite_jellyseerr_jellyfin_connect_body", proxy_fn)
         self.assertIn('Accept-Encoding", "identity"', proxy_fn)
         self.assertNotIn('("Content-Type", "User-Agent")', proxy_fn)
         from manager.runtime.app_proxy import (
