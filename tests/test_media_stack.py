@@ -274,6 +274,7 @@ class MediaStackTests(unittest.TestCase):
                     "X-Forwarded-Prefix": "spoof",
                     "Content-Type": "application/json",
                     "User-Agent": "Mozilla",
+                    "Accept-Encoding": "gzip, deflate, br",
                 }
             )
         )
@@ -285,6 +286,16 @@ class MediaStackTests(unittest.TestCase):
         self.assertNotIn("Host", forwarded)
         self.assertNotIn("Cookie", forwarded)
         self.assertNotIn("X-Forwarded-Prefix", forwarded)
+        self.assertNotIn("Accept-Encoding", forwarded)
+        gzipped = __import__("gzip").compress(b"<html><head></head></html>")
+        from manager.runtime.app_proxy import decode_upstream_payload
+
+        self.assertEqual(
+            decode_upstream_payload(gzipped, {"Content-Encoding": "gzip"}),
+            b"<html><head></head></html>",
+        )
+        self.assertEqual(decode_upstream_payload(gzipped, {}), b"<html><head></head></html>")
+        self.assertEqual(decode_upstream_payload(b"plain", {}), b"plain")
         from manager.runtime.app_proxy import leaked_proxy_app_id
 
         self.assertEqual(
@@ -323,6 +334,8 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("rewrite_arr_initialize_json", source)
         self.assertIn("suppress_login_redirect_for_asset", proxy_fn)
         self.assertIn("select_upstream_request_headers", proxy_fn)
+        self.assertIn("decode_upstream_payload", proxy_fn)
+        self.assertIn('Accept-Encoding", "identity"', proxy_fn)
         self.assertNotIn('("Content-Type", "User-Agent")', proxy_fn)
 
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:

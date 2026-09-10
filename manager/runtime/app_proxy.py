@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gzip
 import json
 import re
+import zlib
 from urllib.parse import parse_qsl, urlencode, urlparse
 
 from manager.runtime.media_stack import media_app_ids
@@ -25,6 +27,7 @@ _SKIP_UPSTREAM_REQUEST_HEADERS = HOP_BY_HOP_HEADERS | {
     "cookie",
     "content-length",
     "expect",
+    "accept-encoding",
 }
 
 _ROOT_ATTR_RE = re.compile(
@@ -302,6 +305,26 @@ def select_upstream_request_headers(headers) -> list[tuple[str, str]]:
             continue
         forwarded.append((str(name), str(value)))
     return forwarded
+
+
+def decode_upstream_payload(payload: bytes, headers) -> bytes:
+    """Undo gzip/deflate so HTML/JSON rewriting sees real text, not binary."""
+    body = payload if isinstance(payload, (bytes, bytearray)) else bytes(payload or b"")
+    encoding = ""
+    if headers is not None and hasattr(headers, "get"):
+        encoding = str(headers.get("Content-Encoding") or headers.get("content-encoding") or "")
+    first = encoding.split(",", 1)[0].strip().lower()
+    try:
+        if first in {"gzip", "x-gzip"} or body.startswith(b"\x1f\x8b"):
+            return gzip.decompress(body)
+        if first == "deflate":
+            try:
+                return zlib.decompress(body)
+            except zlib.error:
+                return zlib.decompress(body, -zlib.MAX_WBITS)
+    except (OSError, EOFError, zlib.error):
+        return bytes(body)
+    return bytes(body)
 
 
 def proxy_prefix(app_id: str) -> str:

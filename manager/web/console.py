@@ -50,6 +50,7 @@ from manager.api import runtime_status as runtime_status_api
 from manager.runtime import network_transfer as network_transfer_runtime
 from manager.runtime.app_proxy import (
     LAST_PROXY_APP_COOKIE,
+    decode_upstream_payload,
     filter_browser_cookies_for_upstream,
     is_public_proxy_app,
     leaked_proxy_app_id,
@@ -3623,12 +3624,13 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         if cookie_header:
             proxy_request.add_header("Cookie", cookie_header)
         proxy_request.add_header("Host", host_override)
+        proxy_request.add_header("Accept-Encoding", "identity")
         proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
         proxy_request.add_header("X-Forwarded-Proto", "http")
         proxy_request.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
         try:
             with PROXY_OPENER.open(proxy_request, timeout=20) as response:
-                payload = response.read()
+                payload = decode_upstream_payload(response.read(), response.headers)
                 headers = rewrite_upstream_headers(
                     {name: value for name, value in response.headers.items()},
                     app_id,
@@ -3647,7 +3649,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 )
                 return
         except HTTPError as exc:
-            payload = exc.read()
+            payload = decode_upstream_payload(exc.read(), exc.headers)
             headers = rewrite_upstream_headers(
                 {name: value for name, value in exc.headers.items()},
                 app_id,
