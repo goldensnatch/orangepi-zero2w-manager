@@ -8,29 +8,16 @@ from http.cookies import SimpleCookie
 from email import policy
 from email.parser import BytesParser
 
-import hashlib
-
-import hmac
-
 import html
-
 import io
-
 import json
-
 import mimetypes
-
 import os
 import re
-
 import secrets
-
 import shutil
-
 import socket
-
 import subprocess
-
 import tempfile
 
 try:
@@ -63,6 +50,10 @@ from manager.api import runtime_status as runtime_status_api
 from manager.runtime import network_transfer as network_transfer_runtime
 from manager.runtime.service_catalog import ServiceCatalog
 from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids, media_launch_target
+from manager.runtime.proxy_tokens import (
+    build_proxy_token as mint_proxy_token,
+    validate_proxy_token as check_proxy_token,
+)
 from manager.runtime.workspace import (
 
     WorkspaceError,
@@ -90,7 +81,6 @@ PASSWORD = os.environ.get("ROCKY_WEB_PASSWORD", "")
 PROJECT_ROOT = Path("/opt/zero2w-manager").resolve()
 
 RUNTIME_ROOT = Path("/run/rocky").resolve()
-PROXY_TOKEN_SECRET_PATH = Path("/opt/zero2w-manager/runtime/config/proxy-token-secret")
 MODE_CATALOG_PATH = Path("/opt/zero2w-manager/runtime/config/modes.json")
 CURRENT_MODE_REQUEST_PATH = Path("/opt/zero2w-manager/runtime/config/current-mode.json")
 MODE_CONFIG_OWNER = os.environ.get(
@@ -141,24 +131,7 @@ AUDIT_LOG_PATH = Path(
 )
 
 CSRF_TOKEN = os.environ.get("ROCKY_WEB_CSRF_TOKEN") or secrets.token_urlsafe(32)
-PROXY_TOKEN_TTL_SECONDS = int(os.environ.get("ROCKY_WEB_PROXY_TOKEN_TTL_SECONDS", "900"))
-
-def load_proxy_token_secret() -> str:
-
-    env_secret = os.environ.get("ROCKY_WEB_PROXY_TOKEN_SECRET")
-    if env_secret:
-        return env_secret
-    try:
-        if PROXY_TOKEN_SECRET_PATH.is_file():
-            return PROXY_TOKEN_SECRET_PATH.read_text(encoding="utf-8").strip()
-        PROXY_TOKEN_SECRET_PATH.parent.mkdir(mode=0o775, parents=True, exist_ok=True)
-        generated = secrets.token_urlsafe(32)
-        PROXY_TOKEN_SECRET_PATH.write_text(generated + "\n", encoding="utf-8")
-        return generated
-    except OSError:
-        return CSRF_TOKEN
-
-PROXY_TOKEN_SECRET = load_proxy_token_secret()
+PROXY_TOKEN_TTL_SECONDS = int(os.environ.get("ROCKY_WEB_PROXY_TOKEN_TTL_SECONDS", "43200"))
 
 
 
@@ -832,13 +805,11 @@ def page(title: str, body: str) -> bytes:
 
 <style>
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
 :root {{
 
     color-scheme: dark;
 
-    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
     --bg: #060a0f;
     --bg-card: rgba(10, 16, 26, 0.85);
@@ -1771,39 +1742,11 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
     def build_proxy_token(self, app_id: str, *, ttl_seconds: int = PROXY_TOKEN_TTL_SECONDS) -> str:
 
-        issued_at = int(time.time())
-        expires_at = issued_at + max(60, int(ttl_seconds))
-        payload = json.dumps({"app": app_id, "exp": expires_at}, separators=(",", ":")).encode("utf-8")
-        payload_b64 = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
-        signature = hmac.new(PROXY_TOKEN_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
-        signature_b64 = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
-        return f"{payload_b64}.{signature_b64}"
+        return mint_proxy_token(app_id, ttl_seconds=ttl_seconds)
 
     def validate_proxy_token(self, token: str, app_id: str) -> bool:
 
-        try:
-            payload_b64, signature_b64 = token.split('.', 1)
-        except ValueError:
-            return False
-
-        expected_signature = hmac.new(PROXY_TOKEN_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
-        expected_signature_b64 = base64.urlsafe_b64encode(expected_signature).decode("ascii").rstrip("=")
-        if not hmac.compare_digest(signature_b64, expected_signature_b64):
-            return False
-
-        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
-        try:
-            payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-        except Exception:
-            return False
-
-        if str(payload.get("app")) != app_id:
-            return False
-        try:
-            expires_at = int(payload.get("exp", 0))
-        except Exception:
-            return False
-        return expires_at >= int(time.time())
+        return check_proxy_token(token, app_id)
 
 
 
@@ -3267,17 +3210,12 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 status = "running"
             raw_url = service.get("url")
             public_url = self.publicize_service_url(str(raw_url)) if isinstance(raw_url, str) and raw_url else None
-            tokenized_url = None
+            tokenized_url = self.proxy_public_url(app_id) + f"?access_token={quote(self.build_proxy_token(app_id))}"
             if isinstance(live_service, dict):
-                tokenized_url = str(live_service.get("tokenized_proxy_url") or "").strip() or None
                 public_url = str(live_service.get("url") or public_url or "").strip() or public_url
-            if tokenized_url is None and isinstance(cached_service, dict):
-                tokenized_url = str(cached_service.get("last_tokenized_proxy_url") or "").strip() or None
-                if public_url is None:
-                    cached_public = str(cached_service.get("last_url") or "").strip()
-                    public_url = cached_public or public_url
-            if tokenized_url is None and public_url:
-                tokenized_url = self.proxy_public_url(app_id) + f"?access_token={quote(self.build_proxy_token(app_id))}"
+            if public_url is None and isinstance(cached_service, dict):
+                cached_public = str(cached_service.get("last_url") or "").strip()
+                public_url = cached_public or public_url
             version = local_build_version()
             if app_id not in app_version_cache:
                 app_version_cache[app_id] = service_reported_version(app_id, str(raw_url) if isinstance(raw_url, str) else None)
@@ -3346,17 +3284,12 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             except Exception:
                 status = "unknown"
             public_url = self.publicize_service_url(raw_url)
-            tokenized_url = None
+            tokenized_url = self._tokenized_media_url(app_id)
             if isinstance(live_service, dict):
-                tokenized_url = str(live_service.get("tokenized_proxy_url") or "").strip() or None
                 public_url = str(live_service.get("url") or public_url or "").strip() or public_url
-            if tokenized_url is None and isinstance(cached_service, dict):
-                tokenized_url = str(cached_service.get("last_tokenized_proxy_url") or "").strip() or None
-                if public_url is None:
-                    cached_public = str(cached_service.get("last_url") or "").strip()
-                    public_url = cached_public or public_url
-            if tokenized_url is None:
-                tokenized_url = self._tokenized_media_url(app_id)
+            if public_url is None and isinstance(cached_service, dict):
+                cached_public = str(cached_service.get("last_url") or "").strip()
+                public_url = cached_public or public_url
             if container and container not in version_cache:
                 version_cache[container] = docker_container_version(container)
             if app_id not in app_version_cache:
@@ -3395,7 +3328,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             for name, value in extra_headers.items():
                 self.send_header(name, value)
         self.send_header("Content-Length", str(len(payload)))
-        self._send_security_headers()
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(payload)
 
@@ -3404,7 +3337,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         proxy_path = request.path[len("/proxy/"):]
         app_id, _, remainder = proxy_path.partition("/")
         if not (self.authenticated() or self.token_authorized_proxy(request, app_id)):
-            self.send_error_page(401, "Authentication required")
+            self.require_authentication()
             return
         extra_headers: dict[str, str] = {}
         supplied_token = parse_qs(request.query).get("access_token", [""])[0]
@@ -3502,7 +3435,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 safe_app_id = html.escape(eid)
                 if is_media:
                     app_id_attr = f' data-app-id="{safe_app_id}"' if eid != "transfer-stack" else ""
-                    actions_html += f'<a href="{safe_url}" target="_blank" rel="noreferrer" class="{launch_cls}"{app_id_attr}>&#x25BA; LAUNCH</a>'
+                    actions_html += f'<a href="{safe_url}" target="_blank" rel="noopener" class="{launch_cls}"{app_id_attr}>&#x25BA; LAUNCH</a>'
                 else:
                     actions_html += f'<button class="{launch_cls}" data-app-id="{safe_app_id}" data-open-url="{safe_url}" type="button">&#x25BA; LAUNCH</button>'
             if entry.get("qr_url") and entry.get("mobile_url"):

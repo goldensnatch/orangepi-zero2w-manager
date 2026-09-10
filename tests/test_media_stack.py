@@ -52,6 +52,24 @@ class MediaStackTests(unittest.TestCase):
             self.assertEqual(service["docker_container"], spec["container"])
             self.assertEqual(service["url"], spec["local_url"])
 
+    def test_proxy_tokens_round_trip_with_shared_secret(self) -> None:
+        import os
+        from manager.runtime import proxy_tokens
+
+        secret = "unit-test-proxy-secret"
+        previous = os.environ.get("ROCKY_WEB_PROXY_TOKEN_SECRET")
+        os.environ["ROCKY_WEB_PROXY_TOKEN_SECRET"] = secret
+        try:
+            token = proxy_tokens.build_proxy_token("prowlarr", ttl_seconds=120)
+            self.assertTrue(proxy_tokens.validate_proxy_token(token, "prowlarr"))
+            self.assertFalse(proxy_tokens.validate_proxy_token(token, "radarr"))
+            self.assertFalse(proxy_tokens.validate_proxy_token("not-a-token", "prowlarr"))
+        finally:
+            if previous is None:
+                os.environ.pop("ROCKY_WEB_PROXY_TOKEN_SECRET", None)
+            else:
+                os.environ["ROCKY_WEB_PROXY_TOKEN_SECRET"] = previous
+
     def test_mode_permission_setup_skips_missing_user(self) -> None:
         import importlib.util
 

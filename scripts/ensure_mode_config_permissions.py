@@ -11,6 +11,7 @@ from pathlib import Path
 
 DEFAULT_CONFIG_DIR = Path("/opt/zero2w-manager/runtime/config")
 DEFAULT_CURRENT_MODE = DEFAULT_CONFIG_DIR / "current-mode.json"
+DEFAULT_PROXY_SECRET = DEFAULT_CONFIG_DIR / "proxy-token-secret"
 DEFAULT_OWNER = "rocky-web"
 
 
@@ -43,6 +44,7 @@ def main() -> int:
     parser.add_argument("--group", default=os.environ.get("ROCKY_MODE_CONFIG_GROUP"))
     parser.add_argument("--config-dir", type=Path, default=DEFAULT_CONFIG_DIR)
     parser.add_argument("--current-mode", type=Path, default=DEFAULT_CURRENT_MODE)
+    parser.add_argument("--proxy-secret", type=Path, default=DEFAULT_PROXY_SECRET)
     args = parser.parse_args()
 
     try:
@@ -55,6 +57,9 @@ def main() -> int:
             args.config_dir.chmod(0o775)
             os.chown(args.current_mode, uid, gid)
             args.current_mode.chmod(0o664)
+            if args.proxy_secret.exists():
+                os.chown(args.proxy_secret, uid, gid)
+                args.proxy_secret.chmod(0o640)
         else:
             print(f"skipping mode-config chown: user {args.owner!r} does not exist")
     except OSError as exc:

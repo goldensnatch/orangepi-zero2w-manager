@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -27,15 +24,15 @@ from manager.runtime.media_stack import (
     MEDIA_STACK_COMPOSE,
     MEDIA_STACK_ROOT,
 )
+from manager.runtime.proxy_tokens import build_proxy_token
 from manager.system_probe import network_header_token, network_links_snapshot
 
 
 LOGGER = logging.getLogger("zero2w-manager")
 RESIDENT_DISPLAY_SETTLE_SECONDS = 1.35
-PROXY_TOKEN_SECRET_PATH = Path('/opt/zero2w-manager/runtime/config/proxy-token-secret')
 PUBLIC_BASE_URL = os.environ.get('ROCKY_PUBLIC_BASE_URL', '').strip()
 ROCKY_WEB_PORT = int(os.environ.get('ROCKY_WEB_PORT', '8090'))
-PROXY_TOKEN_TTL_SECONDS = int(os.environ.get('ROCKY_WEB_PROXY_TOKEN_TTL_SECONDS', '900'))
+PROXY_TOKEN_TTL_SECONDS = int(os.environ.get('ROCKY_WEB_PROXY_TOKEN_TTL_SECONDS', '43200'))
 MODE_CATALOG_PATH = Path('/opt/zero2w-manager/runtime/config/modes.json')
 CURRENT_MODE_REQUEST_PATH = Path('/opt/zero2w-manager/runtime/config/current-mode.json')
 WEB_SERVICE_CACHE_PATH = Path('/opt/zero2w-manager/runtime/config/web-service-cache.json')
@@ -487,22 +484,6 @@ DEFAULT_MODE_CATALOG = {
     ],
 }
 DEFAULT_CURRENT_MODE_REQUEST = {'version': 1, 'selected_mode_id': 'torrent_fortress', 'previous_mode_id': 'safe', 'requested_at': '2026-07-26T20:45:00Z', 'requested_by': 'operator', 'reason': 'Enable the strongest current torrent/privacy posture while preserving Rocky Admin access on LAN and WireGuard.', 'override_flags': {'mobile_exit_node': False, 'pikvm_policy': 'auto', 'epaper_menu_enabled': True, 'epaper_test_path': 'zero2w_manager_menu', 'allow_public_admin': False}}
-
-
-def load_proxy_token_secret() -> str:
-    env_secret = os.environ.get('ROCKY_WEB_PROXY_TOKEN_SECRET')
-    if env_secret:
-        return env_secret
-    try:
-        if PROXY_TOKEN_SECRET_PATH.is_file():
-            return PROXY_TOKEN_SECRET_PATH.read_text(encoding='utf-8').strip()
-        PROXY_TOKEN_SECRET_PATH.parent.mkdir(mode=0o775, parents=True, exist_ok=True)
-        import secrets
-        generated = secrets.token_urlsafe(32)
-        PROXY_TOKEN_SECRET_PATH.write_text(generated + '\n', encoding='utf-8')
-        return generated
-    except OSError:
-        return 'rocky-fallback-secret'
 
 
 class ManagerDaemon:
@@ -2069,14 +2050,7 @@ class ManagerDaemon:
         return urlunparse((parsed.scheme or "http", netloc, parsed.path or "/", "", parsed.query, parsed.fragment))
 
     def _build_proxy_token(self, app_id: str, *, ttl_seconds: int = PROXY_TOKEN_TTL_SECONDS) -> str:
-        issued_at = int(time.time())
-        expires_at = issued_at + max(60, int(ttl_seconds))
-        payload = json.dumps({"app": app_id, "exp": expires_at}, separators=(",", ":")).encode('utf-8')
-        payload_b64 = base64.urlsafe_b64encode(payload).decode('ascii').rstrip('=')
-        secret = load_proxy_token_secret().encode('utf-8')
-        signature = hmac.new(secret, payload_b64.encode('utf-8'), hashlib.sha256).digest()
-        signature_b64 = base64.urlsafe_b64encode(signature).decode('ascii').rstrip('=')
-        return f"{payload_b64}.{signature_b64}"
+        return build_proxy_token(app_id, ttl_seconds=ttl_seconds)
 
     def _preferred_console_base(self) -> str:
         configured = PUBLIC_BASE_URL.rstrip('/')
