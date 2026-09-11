@@ -61,6 +61,7 @@ from manager.runtime.app_proxy import (
     proxied_response_headers,
     proxy_app_id_from_path,
     proxy_bridge_js,
+    proxy_retry_seconds,
     rewrite_arr_initialize_json,
     rewrite_html_root_paths,
     rewrite_jellyseerr_jellyfin_connect_body,
@@ -69,6 +70,7 @@ from manager.runtime.app_proxy import (
     suppress_login_redirect_for_asset,
     transfer_loopback_headers,
     upstream_starting_page,
+    upstream_unavailable_api_payload,
     wants_upstream_wait_page,
 )
 from manager.runtime.service_catalog import ServiceCatalog
@@ -3854,7 +3856,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         elif app_id in MEDIA_STACK_APPS:
             self._ensure_media_app_starting(app_id)
         proxy_timeout = 60 if app_id == "jellyseerr" and method in {"POST", "PUT", "PATCH"} else 20
-        deadline = time.time() + 1.8
+        retry_seconds = proxy_retry_seconds(app_id, target_path)
+        deadline = time.time() + retry_seconds
         last_url_error: BaseException | None = None
         while True:
             try:
@@ -3934,7 +3937,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 )
                 return
         if last_url_error is not None and wants_upstream_wait_page(
-            method, target_path, self.headers.get("Accept", "")
+            method, target_path, self.headers.get("Accept", ""), app_id
         ):
             self.proxy_response(
                 HTTPStatus.SERVICE_UNAVAILABLE,
@@ -3948,12 +3951,16 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 extra_cookies=extra_cookies,
             )
             return
-        self.send_html(
-            "Proxy unavailable",
-            "<section><h2>App is not reachable</h2>"
-            f"<p>{html.escape(app_id)} did not respond.</p>"
-            f"<pre>{html.escape(str(last_url_error or 'proxy_failed'))}</pre></section>",
-            status=HTTPStatus.BAD_GATEWAY,
+        self.proxy_response(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            upstream_unavailable_api_payload(app_id),
+            {
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "no-store",
+                "Retry-After": "2",
+            },
+            extra_headers=extra_headers,
+            extra_cookies=extra_cookies,
         )
         return
 

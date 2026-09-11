@@ -239,7 +239,11 @@ def proxy_bridge_js(app_id: str) -> str:
         "if(typeof u!=='string')return u;"
         "try{"
         "var x=new URL(u,location.origin+b);"
-        "if(x.host!==location.host)return u;"
+        "if(x.host!==location.host){"
+        "var hn=x.hostname;"
+        "var loop=hn==='127.0.0.1'||hn==='localhost'||hn==='::1';"
+        "if(!(p==='/proxy/jellyfin'&&loop&&String(x.port)==='8096'))return u;"
+        "x=new URL(x.pathname+x.search+x.hash,location.origin);}"
         "if(skip(x.pathname))return u;"
         "var path=x.pathname,search=x.search;"
         "var ru=x.searchParams.get('returnUrl')||x.searchParams.get('returnurl');"
@@ -554,18 +558,146 @@ def is_upstream_unavailable(exc: BaseException) -> bool:
     return any(needle in text for needle in _UNAVAILABLE_TEXT)
 
 
-def wants_upstream_wait_page(method: str, path: str, accept: str = "") -> bool:
+_JELLYFIN_REST_ROOTS = frozenset(
+    {
+        "activitylog",
+        "albums",
+        "artists",
+        "audio",
+        "auth",
+        "branding",
+        "channels",
+        "clientlog",
+        "collections",
+        "connect",
+        "devices",
+        "displaypreferences",
+        "environment",
+        "genres",
+        "images",
+        "items",
+        "library",
+        "livetv",
+        "localization",
+        "lyrics",
+        "mediainfo",
+        "mediasegments",
+        "movies",
+        "musicalbums",
+        "musicgenres",
+        "notifications",
+        "packages",
+        "persons",
+        "playback",
+        "playbackinfo",
+        "playingitems",
+        "playlists",
+        "playstate",
+        "plugins",
+        "quickconnect",
+        "remoteimage",
+        "scheduledtasks",
+        "search",
+        "sessions",
+        "shows",
+        "startup",
+        "studios",
+        "subtitle",
+        "subtitles",
+        "syncplay",
+        "system",
+        "trailers",
+        "trickplay",
+        "universalaudio",
+        "useritems",
+        "userlibrary",
+        "users",
+        "userviews",
+        "videos",
+        "webhooks",
+        "years",
+    }
+)
+_DEFAULT_PROXY_RETRY_SECONDS = 1.8
+_JELLYFIN_PUBLIC_INFO_RETRY_SECONDS = 6.0
+
+
+def _upstream_path_only(path: str) -> str:
+    normalized = str(path or "/") or "/"
+    path_only = normalized.split("?", 1)[0]
+    if not path_only.startswith("/"):
+        path_only = "/" + path_only
+    return path_only
+
+
+def accept_is_json_ish(accept: str) -> bool:
+    accept_l = str(accept or "").lower()
+    return (
+        "application/json" in accept_l
+        or "text/json" in accept_l
+        or "+json" in accept_l
+    )
+
+
+def is_jellyfin_spa_path(path: str) -> bool:
+    lowered = _upstream_path_only(path).lower()
+    return lowered == "/web" or lowered.startswith("/web/")
+
+
+def is_jellyfin_rest_path(path: str) -> bool:
+    """Jellyfin REST lives at the server root; the SPA is under /web/."""
+    if is_jellyfin_spa_path(path):
+        return False
+    lowered = _upstream_path_only(path).lower()
+    root = lowered.strip("/").split("/", 1)[0]
+    return bool(root) and root in _JELLYFIN_REST_ROOTS
+
+
+def is_jellyfin_public_system_info_path(path: str) -> bool:
+    return _upstream_path_only(path).lower().rstrip("/") == "/system/info/public"
+
+
+def proxy_retry_seconds(app_id: str, path: str) -> float:
+    """Retry connection-refused briefly; give Jellyfin public info a longer window."""
+    if str(app_id) == "jellyfin" and is_jellyfin_public_system_info_path(path):
+        return _JELLYFIN_PUBLIC_INFO_RETRY_SECONDS
+    return _DEFAULT_PROXY_RETRY_SECONDS
+
+
+def wants_upstream_wait_page(
+    method: str,
+    path: str,
+    accept: str = "",
+    app_id: str = "",
+) -> bool:
+    """HTML wait page is for document navigations, never JSON/REST API calls."""
     if str(method or "GET").upper() != "GET":
         return False
-    normalized = str(path or "/")
-    if "/api/" in normalized or normalized.endswith(".json"):
+    path_only = _upstream_path_only(path)
+    lowered = path_only.lower()
+    if "/api/" in lowered or lowered.endswith(".json"):
         return False
-    if is_static_asset_path(normalized):
+    if is_static_asset_path(path_only):
         return False
-    accept_l = str(accept or "").lower()
-    if "application/json" in accept_l and "text/html" not in accept_l:
+    if accept_is_json_ish(accept):
+        return False
+    if is_jellyfin_rest_path(path_only):
+        return False
+    if str(app_id or "") == "jellyfin" and not is_jellyfin_spa_path(path_only):
         return False
     return True
+
+
+def upstream_unavailable_api_payload(app_id: str) -> bytes:
+    name = proxied_app_display_name(app_id)
+    return json.dumps(
+        {
+            "error": "upstream_unavailable",
+            "app": str(app_id or ""),
+            "message": f"{name} is not reachable",
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def proxied_app_display_name(app_id: str) -> str:

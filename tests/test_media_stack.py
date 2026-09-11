@@ -231,6 +231,10 @@ class MediaStackTests(unittest.TestCase):
         self.assertEqual(map_jellyfin_upstream_path("/manifest.json"), "/web/manifest.json")
         self.assertEqual(map_jellyfin_upstream_path("/web/main.css"), "/web/main.css")
         self.assertEqual(map_jellyfin_upstream_path("/Users/authenticatebyname"), "/Users/authenticatebyname")
+        self.assertEqual(map_jellyfin_upstream_path("/System/Info/Public"), "/System/Info/Public")
+        self.assertEqual(map_jellyfin_upstream_path("/Sessions"), "/Sessions")
+        self.assertEqual(map_jellyfin_upstream_path("/Items/abc"), "/Items/abc")
+        self.assertFalse(map_jellyfin_upstream_path("/System/Info/Public").startswith("/web/"))
         from manager.runtime.app_proxy import rewrite_jellyseerr_jellyfin_connect_body
         from manager.runtime.media_stack import jellyfin_connect_hostname
 
@@ -576,11 +580,14 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("media_stack_activate_mode(current)", source)
         self.assertIn("print_lab_activate_mode(current)", source)
         self.assertIn("entertainment apps stay running", source)
-        before_retry, _, after_retry = proxy_fn.partition("deadline = time.time() + 1.8")
+        self.assertIn("proxy_retry_seconds", proxy_fn)
+        self.assertIn("upstream_unavailable_api_payload", proxy_fn)
+        before_retry, _, after_retry = proxy_fn.partition("deadline = time.time() + retry_seconds")
         self.assertIn("_ensure_media_app_starting", before_retry)
         self.assertIn("_ensure_transfer_stack_starting", before_retry)
         self.assertNotIn("_ensure_media_app_starting", after_retry)
         self.assertNotIn("_ensure_transfer_stack_starting", after_retry)
+        self.assertNotIn("deadline = time.time() + 1.8", proxy_fn)
         self.assertIn("send_console_failure", source)
         self.assertNotIn('if eid != "transfer-stack" else ""', source)
         self.assertNotIn('next_path == "/apps" and last_app', source)
@@ -600,7 +607,9 @@ class MediaStackTests(unittest.TestCase):
         from manager.runtime.app_proxy import (
             is_connection_refused,
             is_upstream_unavailable,
+            proxy_retry_seconds,
             upstream_starting_page,
+            upstream_unavailable_api_payload,
             wants_upstream_wait_page,
         )
         from manager.runtime.media_stack import (
@@ -673,6 +682,41 @@ class MediaStackTests(unittest.TestCase):
         wait_html = upstream_starting_page("jellyseerr")
         self.assertIn(b"Starting Jellyseerr", wait_html)
         self.assertIn(b'meta http-equiv="refresh" content="2"', wait_html)
+        mixed_accept = "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
+        self.assertFalse(
+            wants_upstream_wait_page("GET", "/System/Info/Public", mixed_accept, "jellyfin")
+        )
+        self.assertFalse(
+            wants_upstream_wait_page(
+                "GET", "/System/Info/Public", "text/html,application/xhtml+xml", "jellyfin"
+            )
+        )
+        self.assertFalse(
+            wants_upstream_wait_page("GET", "/Users/authenticatebyname", mixed_accept)
+        )
+        self.assertFalse(wants_upstream_wait_page("GET", "/Sessions", "", "jellyfin"))
+        self.assertFalse(wants_upstream_wait_page("GET", "/Items/abc", "text/html"))
+        self.assertTrue(
+            wants_upstream_wait_page("GET", "/web/", "text/html,application/xhtml+xml", "jellyfin")
+        )
+        self.assertTrue(
+            wants_upstream_wait_page(
+                "GET", "/web/index.html", "text/html,application/xhtml+xml", "jellyfin"
+            )
+        )
+        self.assertFalse(
+            wants_upstream_wait_page("GET", "/web/", "application/json", "jellyfin")
+        )
+        self.assertGreater(proxy_retry_seconds("jellyfin", "/System/Info/Public"), 1.8)
+        self.assertLess(proxy_retry_seconds("jellyfin", "/System/Info/Public"), 12)
+        self.assertEqual(proxy_retry_seconds("jellyfin", "/web/index.html"), 1.8)
+        self.assertEqual(proxy_retry_seconds("jellyfin", "/web/main.css"), 1.8)
+        self.assertEqual(proxy_retry_seconds("jellyseerr", "/"), 1.8)
+        api_payload = json.loads(upstream_unavailable_api_payload("jellyfin"))
+        self.assertEqual(api_payload["error"], "upstream_unavailable")
+        self.assertEqual(api_payload["app"], "jellyfin")
+        self.assertNotIn("Starting Jellyfin", api_payload["message"])
+        self.assertNotIn("<html", json.dumps(api_payload))
 
     def test_console_imports_media_stack_symbols(self) -> None:
         from manager.web import console as web_console
@@ -698,6 +742,41 @@ class MediaStackTests(unittest.TestCase):
         )
         self.assertIn("jellyfin", web_console.MEDIA_STACK_APPS)
         self.assertIn("torrentz", web_console.TRANSFER_PROXY_APP_IDS)
+
+    def test_jellyfin_proxy_api_skips_html_wait_page_and_loopback_target(self) -> None:
+        from manager.runtime.app_proxy import (
+            map_jellyfin_upstream_path,
+            proxy_bridge_js,
+            proxy_document_base,
+            proxy_prefix,
+        )
+        from manager.runtime.launch_requests import catalog_proxy_url
+
+        self.assertEqual(MEDIA_STACK_APPS["jellyfin"]["local_url"], "http://127.0.0.1:8096/")
+        self.assertNotIn("::1", MEDIA_STACK_APPS["jellyfin"]["local_url"])
+        self.assertEqual(
+            catalog_proxy_url("jellyfin", {"url": "http://127.0.0.1:8096/"}),
+            "http://127.0.0.1:8096/",
+        )
+        self.assertEqual(proxy_prefix("jellyfin"), "/proxy/jellyfin")
+        self.assertEqual(proxy_document_base("jellyfin"), "/proxy/jellyfin/web/")
+        self.assertEqual(map_jellyfin_upstream_path("/System/Info/Public"), "/System/Info/Public")
+        bridge = proxy_bridge_js("jellyfin")
+        self.assertIn('"/proxy/jellyfin"', bridge)
+        self.assertIn('"/proxy/jellyfin/web/"', bridge)
+        self.assertIn("path=p+(path.charAt(0)==='/'?path:'/'+path)", bridge)
+        self.assertIn("hn==='::1'", bridge)
+        self.assertIn("p==='/proxy/jellyfin'", bridge)
+        self.assertIn("x.port)==='8096'", bridge)
+        console_src = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
+        proxy_fn = console_src.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
+        self.assertIn("upstream_unavailable_api_payload", proxy_fn)
+        self.assertIn("wants_upstream_wait_page", proxy_fn)
+        self.assertIn('if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"}', proxy_fn)
+        daemon_src = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")
+        print_lab = daemon_src.split("elif effective_mode_id == 'print_lab':", 1)[1].split("else:", 1)[0]
+        self.assertNotIn("ensure_media(False)", print_lab)
+        self.assertIn("ensure_media(False)", daemon_src.split("if effective_mode_id == 'safe':", 1)[1].split("elif", 1)[0])
 
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
