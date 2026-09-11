@@ -489,6 +489,22 @@ DEFAULT_MODE_CATALOG = {
 DEFAULT_CURRENT_MODE_REQUEST = {'version': 1, 'selected_mode_id': 'torrent_fortress', 'previous_mode_id': 'safe', 'requested_at': '2026-07-26T20:45:00Z', 'requested_by': 'operator', 'reason': 'Enable the strongest current torrent/privacy posture while preserving Rocky Admin access on LAN and WireGuard.', 'override_flags': {'mobile_exit_node': False, 'pikvm_policy': 'auto', 'epaper_menu_enabled': True, 'epaper_test_path': 'zero2w_manager_menu', 'allow_public_admin': False}}
 
 
+def mode_reconcile_signature(mode_payload: dict[str, Any] | None) -> str:
+    """Identity for mode reconcile. Must ignore live timestamps/health or it fires every second."""
+    mode = mode_payload.get("mode") if isinstance(mode_payload, dict) else {}
+    if not isinstance(mode, dict):
+        mode = {}
+    desired = mode.get("desired") if isinstance(mode.get("desired"), dict) else {}
+    live = mode.get("live") if isinstance(mode.get("live"), dict) else {}
+    return json.dumps(
+        {
+            "mode_id": str(desired.get("mode_id") or live.get("mode_id") or ""),
+            "requested_at": str(desired.get("requested_at") or ""),
+        },
+        sort_keys=True,
+    )
+
+
 class ManagerDaemon:
     def __init__(self) -> None:
         self.log = LOGGER
@@ -518,12 +534,12 @@ class ManagerDaemon:
         # Used to prevent the application exit callback from drawing
         # the menu while a deliberate long-press stop is still running.
         self._manual_stop_in_progress = False
-        self._config_poll_interval_seconds = 1.0
+        self._config_poll_interval_seconds = 5.0
         self._last_published_config_signature: str | None = None
         self._last_config_reconcile_at = 0.0
         self._last_mode_signature: str | None = None
         self._last_menu_chrome_refresh_at = 0.0
-        self._status_cache_ttl_seconds = 1.0
+        self._status_cache_ttl_seconds = 3.0
         self._mode_payload_cache: dict[str, Any] | None = None
         self._mode_payload_cached_at = 0.0
         self._menu_header_cache: dict[str, str] | None = None
@@ -895,8 +911,8 @@ class ManagerDaemon:
         ):
             self._last_config_reconcile_at = now
             try:
-                mode_payload = self._resolve_mode_payload(force_refresh=True)
-                mode_signature = json.dumps(mode_payload.get("mode", {}), sort_keys=True)
+                mode_payload = self._resolve_mode_payload()
+                mode_signature = mode_reconcile_signature(mode_payload)
                 if mode_signature != self._last_mode_signature:
                     self._last_mode_signature = mode_signature
                     self._publish_runtime_state()
@@ -1841,7 +1857,13 @@ class ManagerDaemon:
 
         if self._is_systemd_display_service(service):
             unit = str(service.get("systemd_service") or "").strip()
-            return bool(unit) and self._mode_service_status(unit) == "active"
+            if not unit:
+                return False
+            status = self._mode_service_status(unit)
+            accepted = service.get("resume_accept_states")
+            if not isinstance(accepted, list) or not accepted:
+                accepted = ["active", "activating"]
+            return status in {str(state) for state in accepted}
 
         app_id = str(service.get("id") or "")
         _pid, running = self._managed_process_matches(app_id)
@@ -2621,7 +2643,11 @@ class ManagerDaemon:
             self.hide_menu()
 
         if self._service_is_running(service):
-            resumed = self._resume_resident_display_service(service)
+            status = self._mode_service_status(str(service.get("systemd_service") or "").strip())
+            if status == "activating":
+                resumed = True
+            else:
+                resumed = self._resume_resident_display_service(service)
             if not resumed and self._is_systemd_display_service(service):
                 resumed = self._run_systemctl(
                     "start",
@@ -3370,13 +3396,14 @@ class ManagerDaemon:
             request.get("source") or "console",
         )
         try:
-            units = catalog_start_units(service)
-            if units:
-                self._run_systemctl("start", units)
             if self._is_resident_display_app(service) or self._is_systemd_display_service(service):
                 self._resume_service_to_foreground(service)
             elif service.get("command"):
                 self._activate_service(service)
+            else:
+                units = catalog_start_units(service)
+                if units:
+                    self._run_systemctl("start", units)
         except Exception:
             self.log.exception("Console launch of %s failed", app_id)
 
@@ -3391,16 +3418,8 @@ class ManagerDaemon:
                     if not self.running:
                         break
                     self._apply_console_launch_request()
-                    payload = self._resolve_mode_payload()
-                    sig = json.dumps(payload.get("mode", {}), sort_keys=True)
-                    if sig != self._last_mode_signature:
-                        self._last_mode_signature = sig
-                        self.log.info("Mode changed: reconciling")
-                        mode_id = str(payload.get("mode", {}).get("live", {}).get("mode_id", "safe"))
-                        self._reconcile_mode_actions(mode_id)
-                        self._publish_runtime_state()
                 except Exception:
-                    self.log.exception("Mode reconcile thread error")
+                    self.log.exception("Launch-request thread error")
         thread = threading.Thread(target=loop, daemon=True, name="mode-reconcile")
         thread.start()
 
@@ -3413,6 +3432,7 @@ class ManagerDaemon:
 
         button_server.start()
         self._start_mode_reconcile_thread()
+        self._quiesce_all_resident_displays()
 
         self._publish_runtime_state(
             {

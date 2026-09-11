@@ -75,7 +75,39 @@ class ResidentAppTests(unittest.TestCase):
             config.write_text("[ui.web]\nenabled = false\nport = 9898\n", encoding="utf-8")
             self.assertIsNone(pwnagotchi_web_url((config,)))
 
-    def test_console_delegates_system_units_to_daemon(self) -> None:
+    def test_mode_reconcile_signature_ignores_live_churn(self) -> None:
+        from manager.daemon import mode_reconcile_signature
+
+        first = mode_reconcile_signature(
+            {
+                "mode": {
+                    "desired": {"mode_id": "entertainment", "requested_at": "t1"},
+                    "live": {"mode_id": "entertainment", "reconciled_at": "2026-01-01T00:00:00Z", "healthy": True},
+                    "services": {"jellyfin": "running"},
+                }
+            }
+        )
+        second = mode_reconcile_signature(
+            {
+                "mode": {
+                    "desired": {"mode_id": "entertainment", "requested_at": "t1"},
+                    "live": {"mode_id": "entertainment", "reconciled_at": "2026-01-01T00:00:01Z", "healthy": False},
+                    "services": {"jellyfin": "stopped"},
+                }
+            }
+        )
+        switched = mode_reconcile_signature(
+            {
+                "mode": {
+                    "desired": {"mode_id": "print_lab", "requested_at": "t2"},
+                    "live": {"mode_id": "print_lab", "reconciled_at": "2026-01-01T00:00:02Z"},
+                }
+            }
+        )
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, switched)
+
+    def test_pwnagotchi_launch_does_not_double_start_units(self) -> None:
         from manager.runtime.launch_requests import catalog_start_units, needs_daemon_launch
 
         catalog = json.loads((ROOT / "config" / "services.json").read_text(encoding="utf-8"))
@@ -107,6 +139,10 @@ class ResidentAppTests(unittest.TestCase):
         self.assertIn("application_manager.active_service_id", daemon)
         self.assertIn("consume_launch_request", daemon)
         self.assertIn("self._start_mode_reconcile_thread()", daemon)
+        self.assertIn("self._quiesce_all_resident_displays()", daemon)
+        apply_fn = daemon.split("def _apply_console_launch_request", 1)[1].split("def _start_mode_reconcile_thread", 1)[0]
+        self.assertIn("_resume_service_to_foreground", apply_fn)
+        self.assertNotIn("if units:\n                self._run_systemctl", apply_fn)
 
 
 if __name__ == "__main__":
