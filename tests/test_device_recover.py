@@ -152,6 +152,33 @@ class DeviceRecoverTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["--not-a-real-flag"])
 
+    def test_apps_page_does_not_block_on_docker(self) -> None:
+        source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
+        apps_fn = source.split("def apps_payload", 1)[1].split("def proxy_response", 1)[0]
+        self.assertIn("published_console_state()", apps_fn)
+        self.assertNotIn("runtime_status_payload(detail=\"full\")", apps_fn)
+        self.assertNotIn("docker inspect", apps_fn)
+        self.assertNotIn("service_reported_version", apps_fn)
+        self.assertNotIn("docker_container_version", apps_fn)
+        self.assertIn("def handle_one_request", source)
+        self.assertIn("ERR_EMPTY_RESPONSE", source)
+
+    def test_safe_mode_does_not_start_pihole_or_gluetun(self) -> None:
+        daemon = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")
+        safe_fn = daemon.split("if effective_mode_id == 'safe':", 1)[1].split("elif effective_mode_id == 'torrent_fortress':", 1)[0]
+        self.assertIn("ensure_media(False)", safe_fn)
+        self.assertNotIn("starting %s", safe_fn)
+        self.assertNotIn("rocky-pihole", safe_fn)
+        self.assertIn("Do not start Pi-hole or Gluetun", safe_fn)
+
+    def test_recover_all_does_not_docker_stop_after_restart(self) -> None:
+        source = (ROOT / "scripts" / "device_recover.py").read_text(encoding="utf-8")
+        all_fn = source.split("def cmd_all", 1)[1].split("def build_parser", 1)[0]
+        self.assertIn("wait_for_console()", all_fn)
+        self.assertIn("restore_web_permissions", all_fn)
+        self.assertNotIn("return cmd_quiesce(args)", all_fn)
+        self.assertIn("Use http://<device-ip>:8090/apps", source)
+
     def test_button_loop_does_not_docker_inspect_every_tick(self) -> None:
         daemon = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")
         button_loop = daemon.split("def _button_loop_should_continue", 1)[1].split("def _publish_runtime_state", 1)[0]

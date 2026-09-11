@@ -668,6 +668,19 @@ def service_reported_version(service_id: str, url: str | None = None) -> str | N
 
 
 
+def published_console_state() -> dict[str, object]:
+    """Read /run/rocky/state.json without Docker inspects or HTTP version probes."""
+    path = Path("/run/rocky/state.json")
+    try:
+        if path.is_file():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return payload
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {}
+
+
 def runtime_status_payload(*, detail: str = "summary") -> dict[str, object]:
 
     status = runtime_status_api.build_runtime_status()
@@ -1768,6 +1781,17 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         )
 
+    def handle_one_request(self) -> None:
+        """Never close the socket with zero bytes; Chrome shows ERR_EMPTY_RESPONSE."""
+        try:
+            super().handle_one_request()
+        except Exception as exc:
+            self.log_error("Request failed: %s", exc)
+            try:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Rocky console request failed")
+            except Exception:
+                self.close_connection = True
+
 
 
     @property
@@ -2383,6 +2407,16 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         return urlparse(proxied)
 
     def do_GET(self) -> None:
+        try:
+            self._handle_get()
+        except Exception as exc:
+            self.log_error("GET failed: %s", exc)
+            try:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Rocky console request failed")
+            except Exception:
+                self.close_connection = True
+
+    def _handle_get(self) -> None:
 
         request = urlparse(self.path)
 
@@ -2468,6 +2502,16 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
 
     def do_POST(self) -> None:
+        try:
+            self._handle_post()
+        except Exception as exc:
+            self.log_error("POST failed: %s", exc)
+            try:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Rocky console request failed")
+            except Exception:
+                self.close_connection = True
+
+    def _handle_post(self) -> None:
         request = urlparse(self.path)
 
         if request.path.startswith("/proxy/"):
@@ -3404,16 +3448,13 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
     def apps_payload(self) -> dict[str, object]:
 
-        runtime = runtime_status_payload(detail="full")
-        published = runtime.get("published", {}).get("state", {})
+        published = published_console_state()
         transfer_state = published.get("transfer", {}) if isinstance(published, dict) else {}
         published_web_services = published.get("web_services", {}) if isinstance(published, dict) else {}
         published_web_cache = published.get("web_service_cache", {}) if isinstance(published, dict) else {}
         active_app = published.get("application", {}).get("active_id") if isinstance(published, dict) else None
         config = network_transfer_runtime.NetworkTransferConfig().snapshot()
         entries: list[dict[str, object]] = []
-        version_cache: dict[str, str | None] = {}
-        app_version_cache: dict[str, str | None] = {}
         catalog = ServiceCatalog()
 
         for service in catalog.menu_services():
@@ -3424,19 +3465,15 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             cached_service = published_web_cache.get(app_id) if isinstance(published_web_cache, dict) else None
             if service_type == "background_service":
                 unit = str(service.get("systemd_service") or service.get("service") or "")
-                container = str(service.get("docker_container") or "")
                 if isinstance(live_service, dict) and isinstance(live_service.get("active"), bool):
                     status = "running" if live_service.get("active") else "stopped"
                 elif unit:
-                    state = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False, timeout=5).stdout.strip()
+                    state = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False, timeout=2).stdout.strip()
                     status = state or "unknown"
                 elif str(service.get("systemd_user_service") or "").strip():
                     user_unit = str(service.get("systemd_user_service") or "").strip()
-                    state = subprocess.run(["systemctl", "--user", "is-active", user_unit], capture_output=True, text=True, check=False, timeout=5).stdout.strip()
+                    state = subprocess.run(["systemctl", "--user", "is-active", user_unit], capture_output=True, text=True, check=False, timeout=2).stdout.strip()
                     status = state or "unknown"
-                elif container:
-                    inspect = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", container], capture_output=True, text=True, check=False, timeout=5)
-                    status = inspect.stdout.strip() or "stopped"
                 else:
                     status = "unknown"
             elif active_app == app_id:
@@ -3455,16 +3492,6 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 cached_public = str(cached_service.get("last_url") or "").strip()
                 public_url = cached_public or public_url
             version = local_build_version()
-            if app_id not in app_version_cache:
-                app_version_cache[app_id] = service_reported_version(app_id, str(raw_url) if isinstance(raw_url, str) else None)
-            reported_version = app_version_cache.get(app_id)
-            if reported_version:
-                version = reported_version
-            container = str(service.get("docker_container") or "")
-            if container:
-                if container not in version_cache:
-                    version_cache[container] = docker_container_version(container)
-                version = reported_version or version_cache.get(container) or version
             entries.append({
                 "id": app_id,
                 "name": str(service.get("name", app_id.title())),
@@ -3508,26 +3535,12 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             if app_id in existing_ids:
                 continue
             service = catalog.get(app_id) or {}
-            container = str(service.get("docker_container") or spec["container"])
             raw_url = str(service.get("url") or spec["local_url"])
             live_service = published_web_services.get(app_id) if isinstance(published_web_services, dict) else None
             cached_service = published_web_cache.get(app_id) if isinstance(published_web_cache, dict) else None
-            try:
-                r = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", container], capture_output=True, text=True, check=False, timeout=5)
-                raw = r.stdout.strip()
-                if raw == "running":
-                    status = "running"
-                elif isinstance(live_service, dict) and isinstance(live_service.get("active"), bool):
-                    status = "running" if live_service.get("active") else "stopped"
-                elif r.returncode != 0:
-                    try:
-                        with socket.create_connection(("127.0.0.1", int(spec["port"])), timeout=1):
-                            status = "running"
-                    except OSError:
-                        status = "stopped"
-                else:
-                    status = "stopped"
-            except Exception:
+            if isinstance(live_service, dict) and isinstance(live_service.get("active"), bool):
+                status = "running" if live_service.get("active") else "stopped"
+            else:
                 status = "unknown"
             public_url = self.publicize_service_url(raw_url)
             tokenized_url = self._tokenized_media_url(app_id)
@@ -3536,11 +3549,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             if public_url is None and isinstance(cached_service, dict):
                 cached_public = str(cached_service.get("last_url") or "").strip()
                 public_url = cached_public or public_url
-            if container and container not in version_cache:
-                version_cache[container] = docker_container_version(container)
-            if app_id not in app_version_cache:
-                app_version_cache[app_id] = service_reported_version(app_id, raw_url)
-            version = app_version_cache.get(app_id) or version_cache.get(container) or local_build_version()
+            version = local_build_version()
             entries.append({
                 "id": app_id,
                 "name": str(service.get("name") or spec["name"]),
@@ -3771,8 +3780,17 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         return
 
     def handle_apps(self) -> None:
+        try:
+            payload = self.apps_payload()
+        except Exception as exc:
+            self.log_error("Apps payload failed: %s", exc)
+            self.send_html(
+                "Apps",
+                "<section><p>Apps page failed to load. "
+                f"{html.escape(str(exc))}</p></section>",
+            )
+            return
 
-        payload = self.apps_payload()
         entries = payload["entries"]
         config = payload["config"]
         vpn = config.get("vpn", {})

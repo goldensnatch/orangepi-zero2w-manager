@@ -812,7 +812,6 @@ class ManagerDaemon:
         import time as _time
         GLUETUN = 'rocky-transfer-gluetun'
         QBT = 'rocky-transfer-qbittorrent'
-        PIHOLE = 'rocky-pihole'
 
         if should_shed_workloads():
             self._shed_overload_workloads(reason=f"reconcile:{effective_mode_id}")
@@ -838,21 +837,13 @@ class ManagerDaemon:
                     self.log.info('%s: stopping %s', effective_mode_id, container_name)
                     self._docker_ensure(container_name, running=False)
 
-        pihole_health = self._docker_container_health(PIHOLE)
-        if pihole_health == 'stopped':
-            self.log.info('%s: starting %s', effective_mode_id, PIHOLE)
-            self._docker_ensure(PIHOLE, running=True)
-
         if effective_mode_id == 'safe':
-            # Safe mode keeps the VPN tunnel up while leaving transfer disabled.
+            # Stop heavy work only. Do not start Pi-hole or Gluetun; that Docker
+            # activity after recover wedges rocky-web and Chrome shows ERR_EMPTY_RESPONSE.
             qbt_health = self._docker_container_health(QBT)
             if qbt_health != 'stopped':
                 self.log.info('safe mode: stopping %s', QBT)
                 self._docker_ensure(QBT, running=False)
-            gluetun_health = self._docker_container_health(GLUETUN)
-            if gluetun_health == 'stopped':
-                self.log.info('safe mode: starting %s', GLUETUN)
-                self._docker_ensure(GLUETUN, running=True)
             ensure_media(False)
 
         elif effective_mode_id == 'torrent_fortress':

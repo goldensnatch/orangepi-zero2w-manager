@@ -385,6 +385,13 @@ def docker_container_status(name: str) -> dict[str, Any]:
 
 
 def docker_snapshot() -> dict[str, Any]:
+    try:
+        from manager.runtime.overload import should_skip_docker_probe
+
+        if should_skip_docker_probe():
+            return {"count": 0, "running": 0, "items": [], "skipped": "high_load"}
+    except Exception:
+        pass
     names: set[str] = set(DEFAULT_DOCKER_CONTAINERS)
     try:
         services = ServiceCatalog().load()

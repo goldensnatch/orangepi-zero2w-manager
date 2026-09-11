@@ -121,6 +121,14 @@ def write_safe_mode(path: Path, reason: str) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+    try:
+        os.chmod(path, 0o664)
+        user = __import__("pwd").getpwnam("rocky-web")
+        os.chown(path, user.pw_uid, user.pw_gid)
+        os.chmod(path.parent, 0o775)
+        os.chown(path.parent, user.pw_uid, user.pw_gid)
+    except (KeyError, OSError, ImportError):
+        pass
 
 
 def print_command(result: subprocess.CompletedProcess[str]) -> None:
@@ -197,13 +205,67 @@ def install_tree(source: Path, dest: Path, *, ref: str) -> list[str]:
     return copied
 
 
+def restore_web_permissions(root: Path) -> None:
+    """Recover copies files as root; rocky-web must still be able to read them."""
+    for relative in ("manager", "config", "scripts", "apps", "ROCKY_BUILD_VERSION"):
+        target = root / relative
+        if not target.exists():
+            continue
+        if target.is_dir():
+            for dirpath, dirnames, filenames in os.walk(target):
+                try:
+                    os.chmod(dirpath, 0o755)
+                except OSError:
+                    pass
+                for name in filenames:
+                    file_path = Path(dirpath) / name
+                    try:
+                        os.chmod(file_path, 0o644)
+                    except OSError:
+                        pass
+        else:
+            try:
+                os.chmod(target, 0o644)
+            except OSError:
+                pass
+    if CURRENT_MODE_PATH.exists():
+        try:
+            os.chmod(CURRENT_MODE_PATH, 0o664)
+            user = __import__("pwd").getpwnam("rocky-web")
+            os.chown(CURRENT_MODE_PATH, user.pw_uid, user.pw_gid)
+            os.chown(CURRENT_MODE_PATH.parent, user.pw_uid, user.pw_gid)
+            os.chmod(CURRENT_MODE_PATH.parent, 0o775)
+        except (KeyError, OSError):
+            pass
+
+
+def wait_for_console(port: int = 8090, timeout: int = 20) -> bool:
+    url = f"http://127.0.0.1:{port}/login"
+    deadline = time.time() + timeout
+    last_error = "no attempt"
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                print(f"console {url} -> {response.status}")
+                return True
+        except Exception as exc:
+            last_error = str(exc)
+            time.sleep(1)
+    print(f"warning: console did not answer {url}: {last_error}")
+    print("Use http://<device-ip>:8090/apps — not port 80.")
+    print("Check: systemctl status rocky-web.service --no-pager")
+    return False
+
+
 def restart_rocky() -> None:
-    for unit in ("rocky-web.service", "zero2w-manager.service"):
+    run(["systemctl", "reset-failed", "rocky-web.service", "zero2w-manager.service"], timeout=15)
+    for unit in ("zero2w-manager.service", "rocky-web.service"):
         result = run(["systemctl", "restart", unit], timeout=45)
         if result.returncode == 0:
             print(f"restart {unit}: ok")
         else:
             print_command(result)
+    wait_for_console()
 
 
 def cmd_quiesce(args: argparse.Namespace) -> int:
@@ -241,6 +303,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         print(f"installing {source} -> {dest}")
         copied = install_tree(source, dest, ref=ref)
         print("updated: " + ", ".join(copied))
+        restore_web_permissions(dest)
     if not args.skip_restart:
         restart_rocky()
     return 0
@@ -253,8 +316,12 @@ def cmd_all(args: argparse.Namespace) -> int:
     update_rc = cmd_update(args)
     if update_rc != 0:
         return update_rc
-    # Pin safe mode again after restart so entertainment cannot start Jellyseerr.
-    return cmd_quiesce(args)
+    if not args.keep_mode:
+        write_safe_mode(CURRENT_MODE_PATH, "device_recover_after_restart")
+        print(f"pinned {CURRENT_MODE_PATH} to safe mode")
+    restore_web_permissions(Path(args.root).resolve())
+    wait_for_console()
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
