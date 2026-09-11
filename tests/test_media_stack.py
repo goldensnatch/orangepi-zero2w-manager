@@ -438,6 +438,7 @@ class MediaStackTests(unittest.TestCase):
                 {
                     "Origin": "http://192.168.1.213:8090",
                     "Referer": "http://192.168.1.213:8090/proxy/transfer-stack/",
+                    "Authorization": "Basic dXNlcjpwYXNz",
                     "X-Api-Key": "unused",
                     "Accept": "application/json",
                 },
@@ -446,6 +447,7 @@ class MediaStackTests(unittest.TestCase):
         )
         self.assertNotIn("Origin", torrent_headers)
         self.assertNotIn("Referer", torrent_headers)
+        self.assertNotIn("Authorization", torrent_headers)
         self.assertEqual(torrent_headers["Accept"], "application/json")
         gzipped = __import__("gzip").compress(b"<html><head></head></html>")
         from manager.runtime.app_proxy import decode_upstream_payload
@@ -460,6 +462,13 @@ class MediaStackTests(unittest.TestCase):
 
         self.assertEqual(cookie_path_for_app("jellyseerr"), "/")
         self.assertEqual(cookie_path_for_app("prowlarr"), "/proxy/prowlarr/")
+        self.assertEqual(cookie_path_for_app("transfer-stack"), "/")
+        self.assertEqual(cookie_path_for_app("torrentz"), "/")
+        self.assertIn("Path=/", rewrite_cookie_header("SID=abc; Path=/", "torrentz"))
+        self.assertNotIn(
+            "Path=/proxy/torrentz",
+            rewrite_cookie_header("SID=abc; Path=/", "torrentz"),
+        )
         self.assertIn("Path=/", rewrite_cookie_header("connect.sid=abc; Path=/", "jellyseerr"))
         self.assertNotIn(
             "Path=/proxy/jellyseerr",
@@ -566,6 +575,8 @@ class MediaStackTests(unittest.TestCase):
         self.assertNotIn('if eid != "transfer-stack" else ""', source)
         self.assertNotIn('next_path == "/apps" and last_app', source)
         self.assertIn("is_transfer_proxy_app(app_id)", proxy_fn)
+        self.assertIn("transfer_loopback_headers", proxy_fn)
+        self.assertIn("proxied_response_headers", proxy_fn)
         self.assertIn("keep_auth_challenge", proxy_fn)
         self.assertIn("handle_login_page", proxy_fn)
         self.assertIn(
@@ -601,6 +612,37 @@ class MediaStackTests(unittest.TestCase):
             transfer_stack_activate_mode("entertainment", force_torrent_fortress=True),
             "torrent_fortress",
         )
+        from manager.runtime.app_proxy import (
+            iter_set_cookie_headers,
+            proxied_response_headers,
+            transfer_loopback_headers,
+        )
+
+        csrf_headers = transfer_loopback_headers("http://127.0.0.1:8088")
+        self.assertEqual(csrf_headers["Origin"], "http://127.0.0.1:8088")
+        self.assertEqual(csrf_headers["Referer"], "http://127.0.0.1:8088/")
+
+        class FakeHeaders:
+            def items(self):
+                return [
+                    ("Content-Type", "application/json"),
+                    ("Set-Cookie", "SID=one; Path=/"),
+                    ("Set-Cookie", "other=two; Path=/"),
+                ]
+
+            def get_all(self, name):
+                if str(name).lower() == "set-cookie":
+                    return ["SID=one; Path=/", "other=two; Path=/"]
+                return None
+
+        self.assertEqual(len(iter_set_cookie_headers(FakeHeaders())), 2)
+        _headers, cookies = proxied_response_headers(
+            FakeHeaders(), "torrentz", "http://127.0.0.1:8088"
+        )
+        self.assertEqual(len(cookies), 2)
+        self.assertTrue(any("SID=one" in cookie and "Path=/" in cookie for cookie in cookies))
+        self.assertNotIn("Set-Cookie", _headers)
+        self.assertNotIn("set-cookie", {name.lower() for name in _headers})
         self.assertTrue(
             wants_upstream_wait_page("GET", "/", "text/html,application/xhtml+xml")
         )

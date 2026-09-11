@@ -58,15 +58,16 @@ from manager.runtime.app_proxy import (
     leaked_proxy_app_id,
     map_jellyfin_upstream_path,
     proxied_app_login_location,
+    proxied_response_headers,
     proxy_app_id_from_path,
     proxy_bridge_js,
     rewrite_arr_initialize_json,
     rewrite_html_root_paths,
     rewrite_jellyseerr_jellyfin_connect_body,
-    rewrite_upstream_headers,
     select_upstream_request_headers,
     static_asset_from_login_query,
     suppress_login_redirect_for_asset,
+    transfer_loopback_headers,
     upstream_starting_page,
     wants_upstream_wait_page,
 )
@@ -3781,7 +3782,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             proxy_request.add_header("Cookie", cookie_header)
         proxy_request.add_header("Host", host_override)
         proxy_request.add_header("Accept-Encoding", "identity")
-        if not is_transfer_proxy_app(app_id):
+        if is_transfer_proxy_app(app_id):
+            for header_name, header_value in transfer_loopback_headers(base).items():
+                proxy_request.add_header(header_name, header_value)
+        else:
             proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
             proxy_request.add_header("X-Forwarded-Proto", "http")
         if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"} | TRANSFER_PROXY_APP_IDS:
@@ -3793,8 +3797,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             try:
                 with PROXY_OPENER.open(proxy_request, timeout=proxy_timeout) as response:
                     payload = decode_upstream_payload(response.read(), response.headers)
-                    headers = rewrite_upstream_headers(
-                        {name: value for name, value in response.headers.items()},
+                    headers, set_cookies = proxied_response_headers(
+                        response.headers,
                         app_id,
                         base,
                         public_hosts=public_hosts,
@@ -3808,13 +3812,13 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                         payload,
                         headers,
                         extra_headers=extra_headers,
-                        extra_cookies=extra_cookies,
+                        extra_cookies=extra_cookies + set_cookies,
                     )
                     return
             except HTTPError as exc:
                 payload = decode_upstream_payload(exc.read(), exc.headers)
-                headers = rewrite_upstream_headers(
-                    {name: value for name, value in exc.headers.items()},
+                headers, set_cookies = proxied_response_headers(
+                    exc.headers,
                     app_id,
                     base,
                     public_hosts=public_hosts,
@@ -3843,7 +3847,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     payload,
                     headers,
                     extra_headers=extra_headers,
-                    extra_cookies=extra_cookies,
+                    extra_cookies=extra_cookies + set_cookies,
                 )
                 return
             except URLError as exc:

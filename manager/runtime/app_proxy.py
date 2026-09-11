@@ -416,10 +416,62 @@ def select_upstream_request_headers(headers, *, app_id: str = "") -> list[tuple[
             continue
         if lower.startswith("x-forwarded-"):
             continue
-        if skip_origin and lower in {"origin", "referer"}:
+        if skip_origin and lower in {"origin", "referer", "authorization"}:
             continue
         forwarded.append((str(name), str(value)))
     return forwarded
+
+
+def transfer_loopback_headers(upstream_base: str) -> dict[str, str]:
+    """Make qBittorrent CSRF see the same origin as Host (127.0.0.1:8088).
+
+    Browser Origin/Referer are the Rocky LAN URL. qBittorrent then logs
+    'Referer header & Target origin mismatch' and /api/v2/sync/maindata
+    returns 403, so the WebUI looks empty after login.
+    """
+    parsed = urlparse(str(upstream_base or "http://127.0.0.1:8088"))
+    origin = f"{parsed.scheme or 'http'}://{parsed.netloc or '127.0.0.1:8088'}"
+    return {"Origin": origin, "Referer": origin.rstrip("/") + "/"}
+
+
+def proxied_response_headers(
+    message,
+    app_id: str,
+    upstream_base: str,
+    public_hosts: set[str] | None = None,
+    *,
+    keep_auth_challenge: bool = False,
+) -> tuple[dict[str, str], list[str]]:
+    header_map = {
+        str(name): str(value)
+        for name, value in (message.items() if hasattr(message, "items") else [])
+        if str(name).lower() != "set-cookie"
+    }
+    headers = rewrite_upstream_headers(
+        header_map,
+        app_id,
+        upstream_base,
+        public_hosts=public_hosts,
+        keep_auth_challenge=keep_auth_challenge,
+    )
+    cookies = [rewrite_cookie_header(value, app_id) for value in iter_set_cookie_headers(message)]
+    return headers, cookies
+
+
+def iter_set_cookie_headers(message) -> list[str]:
+    """Keep every Set-Cookie. Dict-collapsing headers drops qBittorrent's SID."""
+    if message is None:
+        return []
+    if hasattr(message, "get_all"):
+        values = message.get_all("Set-Cookie") or message.get_all("set-cookie") or []
+        cookies = [str(value) for value in values if value]
+        if cookies:
+            return cookies
+    return [
+        str(value)
+        for name, value in (message.items() if hasattr(message, "items") else [])
+        if str(name).lower() == "set-cookie" and value
+    ]
 
 
 def decode_upstream_payload(payload: bytes, headers) -> bytes:
@@ -702,8 +754,8 @@ def rewrite_upstream_location(
 
 
 def cookie_path_for_app(app_id: str) -> str:
-    """Jellyseerr axios calls /api/v1/* at the origin root, so Path=/proxy/jellyseerr drops the session."""
-    if str(app_id) in _ROOT_COOKIE_APPS:
+    """Jellyseerr and qBittorrent call /api/v2 at the origin root as well as /proxy/<app>/."""
+    if str(app_id) in _ROOT_COOKIE_APPS or str(app_id) in TRANSFER_PROXY_APP_IDS:
         return "/"
     return f"{proxy_prefix(app_id)}/"
 
