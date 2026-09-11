@@ -40,7 +40,7 @@ DEFAULT_MODE_CATALOG = {
         {"mode_id": "entertainment", "label": "Entertainment", "description": "Virtual media center with VPN-backed Torrentz and library apps."},
         {"mode_id": "daily_driver", "label": "Daily Driver", "description": "Normal home use with Pi-hole."},
         {"mode_id": "pihole_only", "label": "Pi-hole Only", "description": "DNS and ad-blocking utility mode."},
-        {"mode_id": "print_lab", "label": "Print Lab", "description": "3D printer and Klipper workflow mode."},
+        {"mode_id": "print_lab", "label": "Print Lab", "description": "Klipper/Mainsail. Keeps entertainment apps and Torrentz running."},
     ],
 }
 

@@ -21,11 +21,12 @@ TRANSFER_PROXY_APP_IDS = frozenset({"transfer-stack", "torrentz"})
 TRANSFER_STACK_PORT = 8088
 TRANSFER_STACK_LOCAL_URL = "http://127.0.0.1:8088"
 TRANSFER_STACK_CONTAINERS = ("rocky-transfer-gluetun", "rocky-transfer-qbittorrent")
-# Torrent Fortress and Entertainment share these stacks. Reconcile must not
-# stop Jellyfin to start qBittorrent, or stop qBittorrent to start Jellyfin.
-# Safe / print_lab / pihole_only / daily_driver may still stop media.
-MODES_KEEP_MEDIA = frozenset({"entertainment", "torrent_fortress"})
-TRANSFER_MODES_KEEP_QBITTORRENT = MODES_KEEP_MEDIA
+# Entertainment, Torrent Fortress, and Print Lab are additive. Reconcile
+# must not stop Jellyfin to start qBittorrent, stop qBittorrent to start
+# Klipper, or stop the printer to start media.
+ADDITIVE_STACK_MODES = frozenset({"entertainment", "torrent_fortress", "print_lab"})
+MODES_KEEP_MEDIA = ADDITIVE_STACK_MODES
+TRANSFER_MODES_KEEP_QBITTORRENT = ADDITIVE_STACK_MODES
 
 MEDIA_STACK_APPS: dict[str, dict[str, Any]] = {
     "jellyfin": {
@@ -116,11 +117,10 @@ def transfer_stack_activate_mode(
     *,
     force_torrent_fortress: bool = False,
 ) -> str | None:
-    """Mode to write so qBittorrent stays up. Does not evict entertainment apps.
+    """Mode to write so qBittorrent stays up. Does not evict other additive modes.
 
-    Safe / print_lab stop the downloader. Entertainment and Torrent Fortress
-    both keep qBittorrent, so leave those modes unchanged. From safe, pin
-    fortress.
+    Safe mode stops the downloader. Entertainment, Torrent Fortress, and Print
+    Lab all keep qBittorrent, so leave those unchanged. From safe, pin fortress.
     """
     if force_torrent_fortress:
         return "torrent_fortress"
@@ -130,14 +130,21 @@ def transfer_stack_activate_mode(
 
 
 def media_stack_activate_mode(current_mode: str) -> str | None:
-    """Mode to write so Jellyfin stays up. Does not evict Torrent Fortress.
+    """Mode to write so Jellyfin stays up. Does not evict fortress or Print Lab.
 
-    Entertainment and Torrent Fortress are additive, so leave fortress in
-    place when opening Jellyfin. From safe/print-lab, pin entertainment.
+    Additive modes stay in place when opening Jellyfin. From safe, pin
+    entertainment.
     """
     if str(current_mode or "").strip() in MODES_KEEP_MEDIA:
         return None
     return "entertainment"
+
+
+def print_lab_activate_mode(current_mode: str) -> str | None:
+    """Mode to write so Klipper stays up. Does not evict media or Torrentz."""
+    if str(current_mode or "").strip() in ADDITIVE_STACK_MODES:
+        return None
+    return "print_lab"
 
 
 def entertainment_menu_items() -> list[dict[str, str]]:

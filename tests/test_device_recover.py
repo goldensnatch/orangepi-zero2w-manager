@@ -200,8 +200,9 @@ class DeviceRecoverTests(unittest.TestCase):
         print_lab_fn = daemon.split("elif effective_mode_id == 'print_lab':", 1)[1].split(
             "else:", 1
         )[0]
-        self.assertIn("ensure_media(False)", print_lab_fn)
-        self.assertIn("print_lab: stopping %s", print_lab_fn)
+        self.assertNotIn("ensure_media(False)", print_lab_fn)
+        self.assertNotIn("stopping %s", print_lab_fn)
+        self.assertIn("Additive with entertainment and fortress", print_lab_fn)
 
     def test_recover_all_does_not_docker_stop_after_restart(self) -> None:
         source = (ROOT / "scripts" / "device_recover.py").read_text(encoding="utf-8")

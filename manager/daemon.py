@@ -30,10 +30,10 @@ from manager.runtime.device_quiesce import (
 )
 from manager.runtime.launch_requests import catalog_proxy_url, catalog_start_units, consume_launch_request
 from manager.runtime.media_stack import (
+    ADDITIVE_STACK_MODES,
     MEDIA_STACK_APPS,
     MEDIA_STACK_COMPOSE,
     MEDIA_STACK_ROOT,
-    MODES_KEEP_MEDIA,
     TRANSFER_MODES_KEEP_QBITTORRENT,
     TRANSFER_PROXY_APP_IDS,
     jellyseerr_needs_volume_recreate,
@@ -450,7 +450,7 @@ DEFAULT_MODE_CATALOG = {
         {
             "mode_id": "print_lab",
             "label": "Print Lab",
-            "description": "3D printer and Klipper workflow mode with transfer services disabled.",
+            "description": "Klipper/Mainsail. Additive with entertainment and Torrent Fortress; does not stop Jellyfin or qBittorrent.",
             "category": "utility",
             "network": {
                 "profile": "lan_only",
@@ -833,7 +833,7 @@ class ManagerDaemon:
                 return False
             return True
 
-        if effective_mode_id in MODES_KEEP_MEDIA:
+        if effective_mode_id in ADDITIVE_STACK_MODES:
             stop_radio_workloads()
 
         def ensure_media(running: bool) -> None:
@@ -935,20 +935,13 @@ class ManagerDaemon:
             ensure_media(False)
 
         elif effective_mode_id == 'print_lab':
-            qbt_health = self._docker_container_health(QBT)
-            if qbt_health != 'stopped':
-                self.log.info('print_lab: stopping %s', QBT)
-                self._docker_ensure(QBT, running=False)
-            gluetun_health = self._docker_container_health(GLUETUN)
-            if gluetun_health != 'stopped':
-                self.log.info('print_lab: stopping %s', GLUETUN)
-                self._docker_ensure(GLUETUN, running=False)
+            # Additive with entertainment and fortress: start Klipper/Mainsail
+            # only. Never stop Jellyfin or qBittorrent to free the printer.
             for svc in ('klipper', 'moonraker', 'nginx'):
                 r = __import__('subprocess').run(['systemctl', 'is-active', svc], capture_output=True, text=True)
                 if r.stdout.strip() != 'active':
                     self.log.info('print_lab: starting %s', svc)
                     __import__('subprocess').run(['systemctl', 'start', svc], check=False)
-            ensure_media(False)
         else:
             self.log.debug('_reconcile_mode_actions: no action for mode %s', effective_mode_id)
 
@@ -1551,7 +1544,7 @@ class ManagerDaemon:
             return
 
         current_mode = str(self._load_current_mode_request().get("selected_mode_id") or "").strip()
-        if target_mode in MODES_KEEP_MEDIA and current_mode in MODES_KEEP_MEDIA:
+        if target_mode in ADDITIVE_STACK_MODES and current_mode in ADDITIVE_STACK_MODES:
             self.log.info(
                 "Keeping %s; %s is additive with %s",
                 current_mode or "unset",
@@ -3533,6 +3526,10 @@ class ManagerDaemon:
             mode_id = "torrent_fortress"
         self._last_mode_signature = None
         self._reconcile_mode_actions(mode_id)
+        if mode_id == "print_lab":
+            # Stay on Print Lab; still bring qBittorrent up beside Klipper.
+            self._docker_ensure("rocky-transfer-gluetun", running=True)
+            self._docker_ensure("rocky-transfer-qbittorrent", running=True)
         if app_id != "torrentz":
             return
         service = self._service_configuration("torrentz")
@@ -3574,7 +3571,7 @@ class ManagerDaemon:
                 self._prepare_exclusive_workload(app_id)
                 current = self._load_current_mode_request()
                 current_mode = str(current.get("selected_mode_id") or "").strip()
-                if current_mode not in MODES_KEEP_MEDIA:
+                if current_mode not in ADDITIVE_STACK_MODES:
                     write_selected_mode(
                         "entertainment",
                         reason=f"launcher_open:{app_id}",
@@ -3624,7 +3621,7 @@ class ManagerDaemon:
         self._last_exclusion_at = now
         request = self._load_current_mode_request()
         mode_id = str(request.get("selected_mode_id") or "").strip()
-        if mode_id in MODES_KEEP_MEDIA:
+        if mode_id in ADDITIVE_STACK_MODES:
             stop_radio_workloads()
 
     def _start_mode_reconcile_thread(self) -> None:

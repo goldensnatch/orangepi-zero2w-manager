@@ -84,6 +84,7 @@ from manager.runtime.media_stack import (
     media_compose_up_command,
     media_launch_target,
     media_stack_activate_mode,
+    print_lab_activate_mode,
     transfer_stack_activate_mode,
 )
 from manager.runtime.proxy_tokens import (
@@ -3537,7 +3538,14 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         actions: list[str] = []
         mode_request: dict[str, object] | None = None
         try:
-            mode_request = self.apply_app_activation_mode(service, app_id)
+            requested_mode = str(service.get("activate_mode") or "").strip()
+            if requested_mode == "print_lab":
+                current = str(self.load_current_mode_request_snapshot().get("selected_mode_id") or "")
+                mode = print_lab_activate_mode(current)
+                if mode:
+                    mode_request = self.apply_app_activation_mode({"activate_mode": mode}, app_id)
+            else:
+                mode_request = self.apply_app_activation_mode(service, app_id)
         except OSError as exc:
             self.send_json_error(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
