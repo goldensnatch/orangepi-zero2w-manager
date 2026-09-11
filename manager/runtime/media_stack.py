@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -236,14 +237,80 @@ def container_has_jellyfin_host_alias(container: str) -> bool:
         return False
     if not isinstance(hosts, list):
         return False
-    return any(str(host).startswith("jellyfin:") for host in hosts)
+    return any(
+        str(host).startswith("jellyfin:") or str(host).startswith("host.docker.internal:")
+        for host in hosts
+    )
+
+
+def _docker_inspect(container: str) -> dict[str, Any] | None:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", container],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        return None
+    return payload[0]
+
+
+def jellyfin_connect_hostname(container: str | None = None) -> str:
+    """Hostname Jellyseerr should use to reach Jellyfin from inside Docker."""
+    spec = MEDIA_STACK_APPS["jellyfin"]
+    inspected = _docker_inspect(container or str(spec["container"]))
+    if inspected:
+        mode = str((inspected.get("HostConfig") or {}).get("NetworkMode") or "")
+        if mode != "host":
+            networks = (inspected.get("NetworkSettings") or {}).get("Networks") or {}
+            if isinstance(networks, dict):
+                for net in networks.values():
+                    if not isinstance(net, dict):
+                        continue
+                    ip = str(net.get("IPAddress") or "").strip()
+                    if ip:
+                        return ip
+    return "host.docker.internal"
+
+
+def _container_created_timestamp(container: str) -> float | None:
+    inspected = _docker_inspect(container)
+    if not inspected:
+        return None
+    raw = str(inspected.get("Created") or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        try:
+            return datetime.fromisoformat(raw[:19]).timestamp()
+        except ValueError:
+            return None
 
 
 def jellyseerr_needs_volume_recreate(
     container: str,
     root: Path | None = None,
 ) -> bool:
-    ensure_jellyseerr_config_volume(root)
+    stack_root = Path(root or MEDIA_STACK_ROOT)
+    ensure_jellyseerr_config_volume(stack_root)
+    overlay = stack_root / JELLYSEERR_OVERLAY_NAME
+    created = _container_created_timestamp(container)
+    if overlay.is_file() and (created is None or overlay.stat().st_mtime > created + 1):
+        return True
     if not container_has_destination_mount(container, "/app/config"):
         return True
     return not container_has_jellyfin_host_alias(container)

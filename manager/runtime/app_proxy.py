@@ -6,7 +6,7 @@ import re
 import zlib
 from urllib.parse import parse_qsl, urlencode, urlparse
 
-from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids
+from manager.runtime.media_stack import MEDIA_STACK_APPS, jellyfin_connect_hostname, media_app_ids
 
 
 HOP_BY_HOP_HEADERS = {
@@ -301,7 +301,7 @@ def proxy_bridge_js(app_id: str) -> str:
         "if(d&&d.set)d.set.call(el,val);else el.value=val;"
         "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}"
         "function fillHost(){var h=document.getElementById('hostname');if(h){var cur=(h.value||'').trim().toLowerCase();"
-        "if(!cur||cur==='localhost'||cur==='127.0.0.1'||cur==='0.0.0.0'||cur.indexOf('proxy')>=0)setv(h,'jellyfin');}"
+        "if(!cur||cur==='localhost'||cur==='127.0.0.1'||cur==='0.0.0.0'||cur==='jellyfin'||cur.indexOf('proxy')>=0)setv(h,'host.docker.internal');}"
         "var port=document.getElementById('port');if(port){var pv=(port.value||'').trim();"
         "if(!pv||pv==='8090'||pv==='80')setv(port,'8096');}"
         "var ub=document.getElementById('urlBase');if(ub&&/proxy/i.test(ub.value||''))setv(ub,'');}"
@@ -519,10 +519,9 @@ def rewrite_jellyseerr_jellyfin_connect_body(
     if not any(key in data for key in ("hostname", "port", "useSsl", "urlBase", "ip", "serverType")):
         return payload
     jellyfin = MEDIA_STACK_APPS["jellyfin"]
-    host = str(jellyfin["compose_service"])
+    host = jellyfin_connect_hostname()
     data["hostname"] = host
-    if "ip" in data:
-        data["ip"] = host
+    data["ip"] = host
     data["port"] = int(jellyfin["port"])
     data["urlBase"] = ""
     data["useSsl"] = False
