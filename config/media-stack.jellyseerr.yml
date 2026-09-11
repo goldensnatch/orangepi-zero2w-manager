@@ -1,0 +1,7 @@
+# Merged with runtime/media-stack/docker-compose.yml so Jellyseerr
+# treats /app/config as a real volume (named or bind). Without this,
+# the UI warns that all data will be cleared on restart.
+services:
+  jellyseerr:
+    volumes:
+      - ./jellyseerr-config:/app/config

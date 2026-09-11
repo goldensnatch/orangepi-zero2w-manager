@@ -509,6 +509,48 @@ class MediaStackTests(unittest.TestCase):
         spec.loader.exec_module(module)
         self.assertIsNone(module.resolve_owner("definitely-not-a-real-rocky-user", None))
 
+    def test_jellyseerr_config_volume_overlay(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        from manager.runtime.media_stack import (
+            JELLYSEERR_OVERLAY_NAME,
+            ensure_jellyseerr_config_volume,
+            media_compose_up_command,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                "services:\n  jellyseerr:\n    image: example/jellyseerr\n",
+                encoding="utf-8",
+            )
+            config_dir = ensure_jellyseerr_config_volume(root)
+            self.assertTrue(config_dir.is_dir())
+            overlay = root / JELLYSEERR_OVERLAY_NAME
+            self.assertTrue(overlay.is_file())
+            self.assertIn("./jellyseerr-config:/app/config", overlay.read_text(encoding="utf-8"))
+            command = media_compose_up_command("jellyseerr", root, force_recreate=True)
+            assert command is not None
+            self.assertIn(str(overlay), command)
+            self.assertIn("--force-recreate", command)
+            self.assertEqual(command[-1], "jellyseerr")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                "services:\n  jellyseerr:\n    volumes:\n      - ./data:/app/config\n",
+                encoding="utf-8",
+            )
+            ensure_jellyseerr_config_volume(root)
+            self.assertFalse((root / JELLYSEERR_OVERLAY_NAME).is_file())
+
+        source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
+        self.assertIn("jellyseerr_needs_volume_recreate", source)
+        self.assertIn("media_compose_up_command", source)
+        daemon = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")
+        self.assertIn("jellyseerr_needs_volume_recreate", daemon)
+        self.assertIn("media_compose_up_command", daemon)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,8 @@ from manager.runtime.media_stack import (
     MEDIA_STACK_APPS,
     MEDIA_STACK_COMPOSE,
     MEDIA_STACK_ROOT,
+    jellyseerr_needs_volume_recreate,
+    media_compose_up_command,
 )
 from manager.runtime.proxy_tokens import build_proxy_token
 from manager.system_probe import network_header_token, network_links_snapshot
@@ -729,22 +731,16 @@ class ManagerDaemon:
         """Create/start a media-stack service, preferring compose so missing containers are created."""
         import subprocess as _sp
 
-        if MEDIA_STACK_COMPOSE.is_file():
+        force = compose_service == "jellyseerr" and jellyseerr_needs_volume_recreate(container_name)
+        command = media_compose_up_command(compose_service, force_recreate=force)
+        if command:
             try:
                 result = _sp.run(
-                    [
-                        "docker",
-                        "compose",
-                        "-f",
-                        str(MEDIA_STACK_COMPOSE),
-                        "up",
-                        "-d",
-                        compose_service,
-                    ],
+                    command,
                     cwd=str(MEDIA_STACK_ROOT),
                     capture_output=True,
                     text=True,
-                    timeout=45,
+                    timeout=90,
                     check=False,
                 )
                 self._clear_runtime_caches()
@@ -759,6 +755,8 @@ class ManagerDaemon:
             except Exception:
                 self.log.exception("compose up %s failed", compose_service)
                 self._clear_runtime_caches()
+        elif MEDIA_STACK_COMPOSE.is_file():
+            self.log.warning("compose command for %s was not built", compose_service)
         return self._docker_ensure(container_name, running=True)
 
     def _reconcile_mode_actions(self, effective_mode_id: str) -> None:
@@ -774,7 +772,11 @@ class ManagerDaemon:
                 compose_service = str(spec["compose_service"])
                 container_health = self._docker_container_health(container_name)
                 if running:
-                    if container_health == 'stopped':
+                    recreate = (
+                        compose_service == "jellyseerr"
+                        and jellyseerr_needs_volume_recreate(container_name)
+                    )
+                    if container_health == 'stopped' or recreate:
                         self.log.info('%s: starting %s (%s)', effective_mode_id, container_name, app_id)
                         self._start_media_container(container_name, compose_service)
                 elif container_health != 'stopped':

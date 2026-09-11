@@ -71,7 +71,7 @@ from manager.runtime.app_proxy import (
     wants_upstream_wait_page,
 )
 from manager.runtime.service_catalog import ServiceCatalog
-from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids, media_launch_target
+from manager.runtime.media_stack import MEDIA_STACK_APPS, jellyseerr_needs_volume_recreate, media_app_ids, media_compose_up_command, media_launch_target
 from manager.runtime.proxy_tokens import (
     build_proxy_token as mint_proxy_token,
     validate_proxy_token as check_proxy_token,
@@ -3234,10 +3234,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         container = str(target["container"])
         compose_service = str(target["compose_service"])
         compose_dir = PROJECT_ROOT / "runtime" / "media-stack"
-        compose_file = compose_dir / "docker-compose.yml"
         open_url = self._tokenized_media_url(app_id)
 
-        if self._tcp_port_open(port):
+        recreate = app_id == "jellyseerr" and jellyseerr_needs_volume_recreate(container, compose_dir)
+        if self._tcp_port_open(port) and not recreate:
             return {"ok": True, "app_id": app_id, "status": "running", "already_running": True, "open_url": open_url}
 
         # Radarr/Sonarr/Bazarr can exit cleanly because stale pid files survive an earlier crash.
@@ -3250,10 +3250,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         started_by = "none"
         details: list[str] = []
-        if compose_file.is_file():
-            command = ["docker", "compose", "-f", str(compose_file), "up", "-d", compose_service]
+        command = media_compose_up_command(compose_service, compose_dir, force_recreate=recreate)
+        if command:
             try:
-                result = subprocess.run(command, cwd=str(compose_dir), capture_output=True, text=True, check=False, timeout=45)
+                result = subprocess.run(command, cwd=str(compose_dir), capture_output=True, text=True, check=False, timeout=90)
                 started_by = "docker_compose"
                 details.append((result.stdout or result.stderr or "").strip())
                 if result.returncode != 0:

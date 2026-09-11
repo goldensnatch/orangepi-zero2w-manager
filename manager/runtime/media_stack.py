@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
 
 MEDIA_STACK_ROOT = Path("/opt/zero2w-manager/runtime/media-stack")
 MEDIA_STACK_COMPOSE = MEDIA_STACK_ROOT / "docker-compose.yml"
+JELLYSEERR_CONFIG_DIRNAME = "jellyseerr-config"
+JELLYSEERR_OVERLAY_NAME = "docker-compose.jellyseerr.yml"
+JELLYSEERR_OVERLAY_TEMPLATE = Path(__file__).resolve().parents[2] / "config" / "media-stack.jellyseerr.yml"
+_JELLYSEERR_OVERLAY_FALLBACK = """services:
+  jellyseerr:
+    volumes:
+      - ./jellyseerr-config:/app/config
+"""
 
 MEDIA_STACK_APPS: dict[str, dict[str, Any]] = {
     "jellyfin": {
@@ -104,3 +115,99 @@ def entertainment_menu_items() -> list[dict[str, str]]:
             }
         )
     return items
+
+
+def jellyseerr_overlay_text() -> str:
+    if JELLYSEERR_OVERLAY_TEMPLATE.is_file():
+        return JELLYSEERR_OVERLAY_TEMPLATE.read_text(encoding="utf-8")
+    return _JELLYSEERR_OVERLAY_FALLBACK
+
+
+def ensure_jellyseerr_config_volume(root: Path | None = None) -> Path:
+    """Create ./jellyseerr-config and a compose overlay that bind-mounts /app/config."""
+    stack_root = Path(root or MEDIA_STACK_ROOT)
+    config_dir = stack_root / JELLYSEERR_CONFIG_DIRNAME
+    config_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chown(config_dir, 1000, 1000)
+    except OSError:
+        pass
+    overlay = stack_root / JELLYSEERR_OVERLAY_NAME
+    compose = stack_root / "docker-compose.yml"
+    if compose.is_file() and "/app/config" in compose.read_text(encoding="utf-8", errors="replace"):
+        return config_dir
+    desired = jellyseerr_overlay_text()
+    current = overlay.read_text(encoding="utf-8", errors="replace") if overlay.is_file() else ""
+    if current != desired:
+        overlay.write_text(desired, encoding="utf-8")
+    return config_dir
+
+
+def media_compose_files(root: Path | None = None) -> list[Path]:
+    stack_root = Path(root or MEDIA_STACK_ROOT)
+    files: list[Path] = []
+    compose = stack_root / "docker-compose.yml"
+    if compose.is_file():
+        files.append(compose)
+    overlay = stack_root / JELLYSEERR_OVERLAY_NAME
+    if overlay.is_file():
+        files.append(overlay)
+    return files
+
+
+def media_compose_up_command(
+    service: str,
+    root: Path | None = None,
+    *,
+    force_recreate: bool = False,
+) -> list[str] | None:
+    stack_root = Path(root or MEDIA_STACK_ROOT)
+    ensure_jellyseerr_config_volume(stack_root)
+    files = media_compose_files(stack_root)
+    if not files or files[0].name != "docker-compose.yml":
+        return None
+    command = ["docker", "compose"]
+    for path in files:
+        command.extend(["-f", str(path)])
+    command.extend(["up", "-d"])
+    if force_recreate:
+        command.append("--force-recreate")
+    command.append(service)
+    return command
+
+
+def container_has_destination_mount(container: str, destination: str = "/app/config") -> bool:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{json .Mounts}}", container],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        mounts = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(mounts, list):
+        return False
+    wanted = str(destination).rstrip("/") or "/"
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            continue
+        dest = str(mount.get("Destination") or "").rstrip("/") or "/"
+        if dest == wanted:
+            return True
+    return False
+
+
+def jellyseerr_needs_volume_recreate(
+    container: str,
+    root: Path | None = None,
+) -> bool:
+    ensure_jellyseerr_config_volume(root)
+    return not container_has_destination_mount(container, "/app/config")
