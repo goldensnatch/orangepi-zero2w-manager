@@ -19,6 +19,7 @@ from manager.runtime import (
     button_server,
 )
 from manager.runtime.context import RuntimeContext
+from manager.runtime.launch_requests import catalog_proxy_url, consume_launch_request
 from manager.runtime.media_stack import (
     MEDIA_STACK_APPS,
     MEDIA_STACK_COMPOSE,
@@ -1175,7 +1176,7 @@ class ManagerDaemon:
         for app_id, service in self.menu.services.items():
             if not isinstance(service, dict):
                 continue
-            raw_url = service.get('url')
+            raw_url = catalog_proxy_url(str(app_id), service)
             if not isinstance(raw_url, str) or not raw_url:
                 continue
             unit = service.get('systemd_service')
@@ -1664,6 +1665,13 @@ class ManagerDaemon:
         self,
         app_id: str,
     ) -> tuple[int | None, bool]:
+        if (
+            self.application_manager.active_service_id == app_id
+            and self.application_manager.is_running
+        ):
+            pid = self.application_manager.pid
+            return pid, bool(pid)
+
         state = self._load_managed_process_state()
         if str(state.get("active_mode") or "") != app_id:
             return None, False
@@ -1727,6 +1735,23 @@ class ManagerDaemon:
         clear_state: bool = True,
     ) -> bool:
         app_id = str(service.get("id") or "")
+        if self.application_manager.active_service_id == app_id:
+            self._suppress_resident_exit_callback(app_id)
+            self.application_manager.stop()
+            if clear_state:
+                state = self._load_managed_process_state()
+                if str(state.get("active_mode") or "") == app_id:
+                    state.update(
+                        {
+                            "active_mode": "idle",
+                            "active_pid": None,
+                            "status": "stopped",
+                            "last_error": None,
+                        }
+                    )
+                    self._save_managed_process_state(state)
+            return True
+
         pid, running = self._managed_process_matches(app_id)
         if not pid or not running:
             if clear_state:
@@ -2966,6 +2991,16 @@ class ManagerDaemon:
             service
         )
 
+        self._save_managed_process_state(
+            {
+                **self._load_managed_process_state(),
+                "active_mode": app_id,
+                "active_pid": process.pid,
+                "status": "running",
+                "last_error": None,
+            }
+        )
+
         with self._state_lock:
             self.active_app_id = app_id
             self._mark_active_display_settling()
@@ -3313,6 +3348,31 @@ class ManagerDaemon:
 
         self.running = False
 
+    def _apply_console_launch_request(self) -> None:
+        request = consume_launch_request()
+        if not request:
+            return
+        app_id = str(request.get("app_id") or "").strip()
+        if not app_id:
+            return
+        try:
+            service = self._service_configuration(app_id)
+        except Exception:
+            self.log.warning("Ignoring console launch request for unknown app %s", app_id)
+            return
+        self.log.info(
+            "Console requested launch of %s (source=%s)",
+            app_id,
+            request.get("source") or "console",
+        )
+        try:
+            if self._is_resident_display_app(service):
+                self._resume_service_to_foreground(service)
+            else:
+                self._activate_service(service)
+        except Exception:
+            self.log.exception("Console launch of %s failed", app_id)
+
     def _start_mode_reconcile_thread(self) -> None:
         """Reconcile mode state every 2 seconds."""
         import threading
@@ -3320,9 +3380,10 @@ class ManagerDaemon:
         def loop():
             while self.running:
                 try:
-                    time.sleep(2)
+                    time.sleep(0.5)
                     if not self.running:
                         break
+                    self._apply_console_launch_request()
                     payload = self._resolve_mode_payload()
                     sig = json.dumps(payload.get("mode", {}), sort_keys=True)
                     if sig != self._last_mode_signature:
@@ -3344,6 +3405,7 @@ class ManagerDaemon:
         )
 
         button_server.start()
+        self._start_mode_reconcile_thread()
 
         self._publish_runtime_state(
             {

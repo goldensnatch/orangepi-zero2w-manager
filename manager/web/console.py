@@ -71,7 +71,7 @@ from manager.runtime.app_proxy import (
     wants_upstream_wait_page,
 )
 from manager.runtime.service_catalog import ServiceCatalog
-from manager.runtime.media_stack import MEDIA_STACK_APPS, jellyseerr_needs_volume_recreate, media_app_ids, media_compose_up_command, media_launch_target
+from manager.runtime.launch_requests import catalog_proxy_url, write_launch_request
 from manager.runtime.proxy_tokens import (
     build_proxy_token as mint_proxy_token,
     validate_proxy_token as check_proxy_token,
@@ -3173,10 +3173,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         service = ServiceCatalog().get(app_id)
         if not service:
             return None
-        raw_url = service.get("url")
-        if not isinstance(raw_url, str) or not raw_url:
-            return None
-        return raw_url
+        return catalog_proxy_url(app_id, service)
 
     def token_authorized_proxy(self, request, app_id: str) -> bool:
 
@@ -3340,8 +3337,13 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         unit = str(service.get("systemd_service") or service.get("service") or "").strip()
         user_unit = str(service.get("systemd_user_service") or "").strip()
         container = str(service.get("docker_container") or "").strip()
-        raw_url = service.get("url")
-        open_url = self.publicize_service_url(str(raw_url)) if isinstance(raw_url, str) and raw_url else None
+        raw_url = catalog_proxy_url(app_id, service)
+        proxy_base = self.proxy_base_for_app(app_id)
+        open_url = (
+            self.proxy_public_url(app_id) + f"?access_token={quote(self.build_proxy_token(app_id))}"
+            if proxy_base
+            else (self.publicize_service_url(str(raw_url)) if isinstance(raw_url, str) and raw_url else None)
+        )
 
         actions: list[str] = []
         mode_request: dict[str, object] | None = None
@@ -3360,6 +3362,20 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             actions.append(
                 f"requested mode {mode_request.get('selected_mode_id')} via {CURRENT_MODE_REQUEST_PATH}"
             )
+
+        if service.get("resident_display") or service.get("display_owner"):
+            write_launch_request(app_id, source="console")
+            actions.append(f"requested {app_id} via zero2w-manager.service")
+            self.send_json(
+                {
+                    "ok": True,
+                    "app_id": app_id,
+                    "status": "starting",
+                    "open_url": open_url,
+                    "detail": "\n".join(a for a in actions if a),
+                }
+            )
+            return
 
         ok = True
         if unit:
@@ -3420,9 +3436,14 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     status = "unknown"
             elif active_app == app_id:
                 status = "running"
-            raw_url = service.get("url")
+            raw_url = catalog_proxy_url(app_id, service)
             public_url = self.publicize_service_url(str(raw_url)) if isinstance(raw_url, str) and raw_url else None
-            tokenized_url = self.proxy_public_url(app_id) + f"?access_token={quote(self.build_proxy_token(app_id))}"
+            proxy_base = self.proxy_base_for_app(app_id)
+            tokenized_url = (
+                self.proxy_public_url(app_id) + f"?access_token={quote(self.build_proxy_token(app_id))}"
+                if proxy_base
+                else None
+            )
             if isinstance(live_service, dict):
                 public_url = str(live_service.get("url") or public_url or "").strip() or public_url
             if public_url is None and isinstance(cached_service, dict):
@@ -3446,9 +3467,17 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 "status": status,
                 "type": service_type,
                 "version": version,
-                "open_url": public_url,
+                "open_url": tokenized_url or public_url,
                 "mobile_url": tokenized_url or public_url,
                 "qr_url": self.qr_image_url(tokenized_url or public_url) if (tokenized_url or public_url) else None,
+                "launchable": bool(
+                    service.get("resident_display")
+                    or service.get("display_owner")
+                    or service.get("systemd_service")
+                    or service.get("systemd_user_service")
+                    or service.get("docker_container")
+                    or proxy_base
+                ),
             })
 
         downloader = transfer_state.get("downloader", {}) if isinstance(transfer_state, dict) else {}
@@ -3653,13 +3682,14 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         proxy_request.add_header("Accept-Encoding", "identity")
         proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
         proxy_request.add_header("X-Forwarded-Proto", "http")
-        if app_id not in {"jellyseerr", "jellyfin"}:
+        if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"}:
             proxy_request.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
+        proxy_timeout = 60 if app_id == "jellyseerr" and method in {"POST", "PUT", "PATCH"} else 20
         deadline = time.time() + 1.8
         last_url_error: URLError | None = None
         while True:
             try:
-                with PROXY_OPENER.open(proxy_request, timeout=20) as response:
+                with PROXY_OPENER.open(proxy_request, timeout=proxy_timeout) as response:
                     payload = decode_upstream_payload(response.read(), response.headers)
                     headers = rewrite_upstream_headers(
                         {name: value for name, value in response.headers.items()},
@@ -3781,6 +3811,12 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 actions_html += (
                     f'<a href="{safe_url}" target="_blank" rel="noopener" '
                     f'class="{launch_cls}"{app_id_attr}>&#x25BA; LAUNCH</a>'
+                )
+            elif entry.get("launchable"):
+                safe_app_id = html.escape(eid)
+                actions_html += (
+                    f'<button class="{launch_cls}" data-app-id="{safe_app_id}" type="button">'
+                    f"&#x25BA; LAUNCH</button>"
                 )
             if entry.get("qr_url") and entry.get("mobile_url"):
                 safe_qr = html.escape(str(entry["qr_url"]))
@@ -3910,16 +3946,19 @@ function queueAppStart(appId) {{
     if (feedback) feedback.textContent = 'Launch failed for ' + appId + ': ' + error;
   }});
 }}
-document.querySelectorAll('a.btn-launch').forEach((link) => {{
+document.querySelectorAll('a.btn-launch, button.btn-launch').forEach((link) => {{
   link.addEventListener('click', (event) => {{
     queueAppStart(link.dataset.appId);
+    const url = link.getAttribute('href');
+    if (!url) {{
+      event.preventDefault();
+      return;
+    }}
     // Keep this tab on the Rocky console. Modified clicks already open a new tab
     // via the browser; a plain click must not fall through to window.location.
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {{
       return;
     }}
-    const url = link.getAttribute('href');
-    if (!url) return;
     event.preventDefault();
     window.open(url, '_blank', 'noopener');
   }});

@@ -509,7 +509,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("is_proxy_bridge_path", proxy_fn)
         self.assertIn("proxy_bridge_js", proxy_fn)
         self.assertIn("X-Rocky-Proxy-App", proxy_fn)
-        self.assertIn('if app_id not in {"jellyseerr", "jellyfin"}', proxy_fn)
+        self.assertIn('if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"}', proxy_fn)
         self.assertIn('Accept-Encoding", "identity"', proxy_fn)
         self.assertNotIn('("Content-Type", "User-Agent")', proxy_fn)
         from manager.runtime.app_proxy import (
