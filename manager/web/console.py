@@ -53,11 +53,13 @@ from manager.runtime.app_proxy import (
     decode_upstream_payload,
     filter_browser_cookies_for_upstream,
     is_connection_refused,
+    is_proxy_bridge_path,
     is_public_proxy_app,
     leaked_proxy_app_id,
     map_jellyfin_upstream_path,
     proxied_app_login_location,
     proxy_app_id_from_path,
+    proxy_bridge_js,
     rewrite_arr_initialize_json,
     rewrite_html_root_paths,
     rewrite_jellyseerr_jellyfin_connect_body,
@@ -3584,7 +3586,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
-        extra_headers: dict[str, str] = {}
+        extra_headers: dict[str, str] = {"X-Rocky-Proxy-App": app_id}
         extra_cookies = [
             f"{LAST_PROXY_APP_COOKIE}={quote(app_id)}; Path=/; SameSite=Lax; Max-Age=43200"
         ]
@@ -3598,6 +3600,19 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         base = self.proxy_base_for_app(app_id)
         if not base:
             self.send_error_page(404, "Unknown proxied application")
+            return
+        if is_proxy_bridge_path(remainder):
+            payload = proxy_bridge_js(app_id).encode("utf-8")
+            self.proxy_response(
+                HTTPStatus.OK,
+                payload,
+                {
+                    "Content-Type": "application/javascript; charset=utf-8",
+                    "Cache-Control": "no-store",
+                },
+                extra_headers=extra_headers,
+                extra_cookies=extra_cookies,
+            )
             return
         forwarded_query = request.query
         if remainder == "login" or remainder.endswith("/login"):

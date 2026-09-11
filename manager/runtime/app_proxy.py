@@ -73,6 +73,15 @@ _JELLYSEERR_LEAK_PREFIXES = (
     "/_next/",
 )
 _ROOT_COOKIE_APPS = frozenset({"jellyseerr"})
+_PROXY_BRIDGE_NAME = "__rocky_bridge.js"
+_NEXT_DATA_RE = re.compile(
+    r'(<script[^>]*\bid=["\']__NEXT_DATA__["\'][^>]*>)(.*?)(</script>)',
+    re.DOTALL | re.IGNORECASE,
+)
+_CSP_META_RE = re.compile(
+    r'(?is)<meta[^>]*http-equiv=["\']Content-Security-Policy["\'][^>]*>',
+)
+_ROOT_SERVICE_WORKERS = frozenset({"serviceworker.js", "service-worker.js", "sw.js"})
 
 
 def public_proxy_app_ids() -> frozenset[str]:
@@ -121,6 +130,8 @@ def leaked_proxy_app_id(
     if str(path or "").startswith("/proxy/") or is_rocky_console_request(path):
         return None
     normalized = str(path or "")
+    if _is_root_service_worker_path(normalized):
+        return None
     if _is_jellyseerr_leaked_path(normalized):
         return "jellyseerr"
     referer_app = proxy_app_id_from_path(urlparse(referer or "").path)
@@ -143,6 +154,15 @@ def _is_jellyseerr_leaked_path(path: str) -> bool:
         normalized == prefix.rstrip("/") or normalized.startswith(prefix)
         for prefix in _JELLYSEERR_LEAK_PREFIXES
     )
+
+
+def _is_root_service_worker_path(path: str) -> bool:
+    name = str(path or "").split("?", 1)[0].rsplit("/", 1)[-1].lower()
+    return name in _ROOT_SERVICE_WORKERS
+
+
+def is_proxy_bridge_path(remainder: str) -> bool:
+    return str(remainder or "").split("?", 1)[0].rstrip("/") == _PROXY_BRIDGE_NAME
 
 
 def is_static_asset_path(path: str) -> bool:
@@ -191,12 +211,16 @@ def rewrite_arr_initialize_json(
     return json.dumps(data).encode("utf-8")
 
 
-def proxy_bridge_script(app_id: str) -> str:
+def proxy_bridge_js(app_id: str) -> str:
     prefix = json.dumps(proxy_prefix(app_id))
     base = json.dumps(proxy_document_base(app_id))
     return (
-        "<script>(function(p,b){"
+        "(function(p,b){"
         "if(window.__rockyPrefix)return;window.__rockyPrefix=p;"
+        "try{if(navigator.serviceWorker){"
+        "navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});"
+        "navigator.serviceWorker.register=function(){return Promise.resolve({unregister:function(){return Promise.resolve(true);}});};"
+        "}}catch(e){}"
         "function skip(path){"
         "var s=['/apps','/logs','/files','/view','/download','/api/runtime','/api/security',"
         "'/api/mode','/api/network','/api/transfer','/api/storage','/api/audit','/api/apps'];"
@@ -223,6 +247,8 @@ def proxy_bridge_script(app_id: str) -> str:
         "if(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u))return x.protocol+'//'+location.host+next;"
         "return next;"
         "}catch(e){return u;}}"
+        "try{if(window.__NEXT_DATA__&&typeof window.__NEXT_DATA__==='object'){"
+        "window.__NEXT_DATA__.assetPrefix=p;}}catch(e){}"
         "function hookHist(name){var orig=history[name];if(!orig)return;"
         "history[name]=function(s,t,u){if(u!==undefined&&u!==null&&u!==''){"
         "arguments[2]=rewrite(String(u));}return orig.apply(this,arguments);};}"
@@ -237,6 +263,13 @@ def proxy_bridge_script(app_id: str) -> str:
         "try{Object.defineProperty(window,n,{configurable:true,get:function(){return cur;},"
         "set:function(v){cur=pin(v);}});}catch(e){}"
         "if(cur)pin(cur);});"
+        "function hookAxios(v){if(!v||!v.interceptors||!v.interceptors.request)return v;"
+        "try{v.interceptors.request.use(function(c){if(c&&c.url)c.url=rewrite(String(c.url));return c;});}catch(e){}"
+        "return v;}"
+        "var ax=window.axios;"
+        "try{Object.defineProperty(window,'axios',{configurable:true,get:function(){return ax;},"
+        "set:function(v){ax=hookAxios(v);}});}catch(e){}"
+        "if(ax)hookAxios(ax);"
         "function hook(proto,prop){var d=Object.getOwnPropertyDescriptor(proto,prop);"
         "if(!d||!d.set)d=Object.getOwnPropertyDescriptor(HTMLElement.prototype,prop);"
         "if(!d||!d.set)return;"
@@ -273,8 +306,28 @@ def proxy_bridge_script(app_id: str) -> str:
         "if(!pv||pv==='8090'||pv==='80')setv(port,'8096');}"
         "var ub=document.getElementById('urlBase');if(ub&&/proxy/i.test(ub.value||''))setv(ub,'');}"
         "var n=0,t=setInterval(function(){fillHost();if(++n>48)clearInterval(t);},250);fillHost();}"
-        "})(" + prefix + "," + base + ");</script>"
+        "})(" + prefix + "," + base + ");"
     )
+
+
+def proxy_bridge_script(app_id: str) -> str:
+    return f'<script src="{proxy_prefix(app_id)}/{_PROXY_BRIDGE_NAME}"></script>'
+
+
+def rewrite_jellyseerr_next_data(text: str) -> str:
+    prefix = proxy_prefix("jellyseerr")
+
+    def repl(match) -> str:
+        try:
+            data = json.loads(match.group(2))
+        except (TypeError, ValueError):
+            return match.group(0)
+        if not isinstance(data, dict):
+            return match.group(0)
+        data["assetPrefix"] = prefix
+        return match.group(1) + json.dumps(data, separators=(",", ":")) + match.group(3)
+
+    return _NEXT_DATA_RE.sub(repl, text, count=1)
 
 
 def inject_proxy_bridge(html: str, app_id: str) -> str:
@@ -569,10 +622,13 @@ def rewrite_html_root_paths(payload: bytes, app_id: str, content_type: str) -> b
         text = payload.decode("latin-1")
     text = _ROOT_ATTR_RE.sub(rf"\g<attr>{prefix}/\g<path>", text)
     text = _URL_FUNC_RE.sub(rf"url({prefix}/", text)
+    text = _CSP_META_RE.sub("", text)
     if app_id != "jellyseerr":
         text = _QUOTED_ROOT_RE.sub(rf"\g<quote>{prefix}/\g<path>\g<quote>", text)
         text = _ARR_URLBASE_RE.sub(rf'\1\2{prefix}\2', text)
         text = text.replace("__URL_BASE__", prefix)
+    else:
+        text = rewrite_jellyseerr_next_data(text)
     text = re.sub(r"(?is)<base\b[^>]*>", "", text)
     text = inject_proxy_bridge(text, app_id)
     return text.encode("utf-8")

@@ -127,7 +127,7 @@ class MediaStackTests(unittest.TestCase):
             "text/html",
         )
         self.assertIn(b'window.location="/proxy/radarr/login?returnUrl=%2F"', js_html)
-        self.assertIn(b"window.__rockyPrefix", js_html)
+        self.assertIn(b"/proxy/radarr/__rocky_bridge.js", js_html)
         self.assertIn(b'<base href="/proxy/radarr/">', js_html)
         html_urlbase = rewrite_html_root_paths(
             b'<html><head></head><script>window.Prowlarr={urlBase:""}</script></html>',
@@ -273,8 +273,14 @@ class MediaStackTests(unittest.TestCase):
             "text/html",
         )
         self.assertIn(b'"page":"/setup"', next_html)
-        self.assertIn(b"fillHost", next_html)
-        self.assertIn(b"pushState", next_html)
+        self.assertIn(b'"assetPrefix":"/proxy/jellyseerr"', next_html)
+        self.assertIn(b"/proxy/jellyseerr/__rocky_bridge.js", next_html)
+        from manager.runtime.app_proxy import proxy_bridge_js
+
+        bridge = proxy_bridge_js("jellyseerr")
+        self.assertIn("fillHost", bridge)
+        self.assertIn("serviceWorker", bridge)
+        self.assertIn("pushState", bridge)
 
     def test_entertainment_proxy_skips_rocky_login(self) -> None:
         from manager.runtime.app_proxy import (
@@ -438,6 +444,13 @@ class MediaStackTests(unittest.TestCase):
             ),
             "prowlarr",
         )
+        self.assertIsNone(
+            leaked_proxy_app_id(
+                path="/serviceworker.js",
+                referer="",
+                last_app_id="jellyfin",
+            )
+        )
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         proxy_fn = source.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
         self.assertIn("is_public_proxy_app(app_id)", proxy_fn)
@@ -450,6 +463,9 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("wants_upstream_wait_page", proxy_fn)
         self.assertIn("map_jellyfin_upstream_path", proxy_fn)
         self.assertIn("rewrite_jellyseerr_jellyfin_connect_body", proxy_fn)
+        self.assertIn("is_proxy_bridge_path", proxy_fn)
+        self.assertIn("proxy_bridge_js", proxy_fn)
+        self.assertIn("X-Rocky-Proxy-App", proxy_fn)
         self.assertIn('if app_id not in {"jellyseerr", "jellyfin"}', proxy_fn)
         self.assertIn('Accept-Encoding", "identity"', proxy_fn)
         self.assertNotIn('("Content-Type", "User-Agent")', proxy_fn)
