@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -12,21 +13,8 @@ MEDIA_STACK_ROOT = Path("/opt/zero2w-manager/runtime/media-stack")
 MEDIA_STACK_COMPOSE = MEDIA_STACK_ROOT / "docker-compose.yml"
 JELLYSEERR_CONFIG_DIRNAME = "jellyseerr-config"
 JELLYSEERR_OVERLAY_NAME = "docker-compose.jellyseerr.yml"
-JELLYSEERR_OVERLAY_TEMPLATE = Path(__file__).resolve().parents[2] / "config" / "media-stack.jellyseerr.yml"
-_JELLYSEERR_OVERLAY_FALLBACK = """services:
-  jellyseerr:
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "jellyfin:host-gateway"
-    volumes:
-      - ./jellyseerr-config:/app/config
-"""
-_JELLYSEERR_OVERLAY_HOSTS_ONLY = """services:
-  jellyseerr:
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "jellyfin:host-gateway"
-"""
+_DEFAULT_DOCKER_GATEWAY = "172.17.0.1"
+_IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
 MEDIA_STACK_APPS: dict[str, dict[str, Any]] = {
     "jellyfin": {
@@ -127,12 +115,70 @@ def entertainment_menu_items() -> list[dict[str, str]]:
     return items
 
 
+def _looks_like_ipv4(value: str) -> bool:
+    if not _IPV4_RE.match(str(value or "")):
+        return False
+    return all(0 <= int(part) <= 255 for part in value.split("."))
+
+
+def docker_bridge_gateway_ip() -> str:
+    """Literal IPv4 for the Docker host from a container. Avoids host.docker.internal DNS."""
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "network",
+                "inspect",
+                "bridge",
+                "-f",
+                "{{range .IPAM.Config}}{{.Gateway}}\n{{end}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        result = None
+    if result is not None and result.returncode == 0:
+        for line in (result.stdout or "").splitlines():
+            candidate = line.strip()
+            if _looks_like_ipv4(candidate):
+                return candidate
+    try:
+        addr = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", "docker0"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        addr = None
+    if addr is not None and addr.returncode == 0:
+        match = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", addr.stdout or "")
+        if match and _looks_like_ipv4(match.group(1)):
+            return match.group(1)
+    return _DEFAULT_DOCKER_GATEWAY
+
+
 def jellyseerr_overlay_text(*, include_config_volume: bool = True) -> str:
-    if include_config_volume and JELLYSEERR_OVERLAY_TEMPLATE.is_file():
-        return JELLYSEERR_OVERLAY_TEMPLATE.read_text(encoding="utf-8")
+    gateway = docker_bridge_gateway_ip()
+    lines = [
+        "services:",
+        "  jellyseerr:",
+        "    extra_hosts:",
+        f'      - "host.docker.internal:{gateway}"',
+        f'      - "jellyfin:{gateway}"',
+    ]
     if include_config_volume:
-        return _JELLYSEERR_OVERLAY_FALLBACK
-    return _JELLYSEERR_OVERLAY_HOSTS_ONLY
+        lines.extend(
+            [
+                "    volumes:",
+                "      - ./jellyseerr-config:/app/config",
+            ]
+        )
+    return "\n".join(lines) + "\n"
 
 
 def ensure_jellyseerr_config_volume(root: Path | None = None) -> Path:
@@ -266,7 +312,7 @@ def _docker_inspect(container: str) -> dict[str, Any] | None:
 
 
 def jellyfin_connect_hostname(container: str | None = None) -> str:
-    """Hostname Jellyseerr should use to reach Jellyfin from inside Docker."""
+    """IPv4 Jellyseerr should use; never a DNS name like host.docker.internal."""
     spec = MEDIA_STACK_APPS["jellyfin"]
     inspected = _docker_inspect(container or str(spec["container"]))
     if inspected:
@@ -274,13 +320,25 @@ def jellyfin_connect_hostname(container: str | None = None) -> str:
         if mode != "host":
             networks = (inspected.get("NetworkSettings") or {}).get("Networks") or {}
             if isinstance(networks, dict):
+                seerr = _docker_inspect(str(MEDIA_STACK_APPS["jellyseerr"]["container"]))
+                seerr_nets = set()
+                if seerr:
+                    names = (seerr.get("NetworkSettings") or {}).get("Networks") or {}
+                    if isinstance(names, dict):
+                        seerr_nets = set(names)
+                for name, net in networks.items():
+                    if not isinstance(net, dict):
+                        continue
+                    ip = str(net.get("IPAddress") or "").strip()
+                    if ip and _looks_like_ipv4(ip) and (not seerr_nets or name in seerr_nets):
+                        return ip
                 for net in networks.values():
                     if not isinstance(net, dict):
                         continue
                     ip = str(net.get("IPAddress") or "").strip()
-                    if ip:
+                    if ip and _looks_like_ipv4(ip):
                         return ip
-    return "host.docker.internal"
+    return docker_bridge_gateway_ip()
 
 
 def _container_created_timestamp(container: str) -> float | None:

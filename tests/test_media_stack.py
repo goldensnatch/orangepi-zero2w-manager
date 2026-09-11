@@ -222,14 +222,16 @@ class MediaStackTests(unittest.TestCase):
         self.assertEqual(map_jellyfin_upstream_path("/web/main.css"), "/web/main.css")
         self.assertEqual(map_jellyfin_upstream_path("/Users/authenticatebyname"), "/Users/authenticatebyname")
         from manager.runtime.app_proxy import rewrite_jellyseerr_jellyfin_connect_body
+        from manager.runtime.media_stack import jellyfin_connect_hostname
 
+        expected_host = jellyfin_connect_hostname()
         rewritten_connect = json.loads(
             rewrite_jellyseerr_jellyfin_connect_body(
                 b'{"hostname":"127.0.0.1","port":8096,"urlBase":"","username":"admin","serverType":1}',
                 public_hosts={"192.168.1.213"},
             )
         )
-        self.assertEqual(rewritten_connect["hostname"], "host.docker.internal")
+        self.assertEqual(rewritten_connect["hostname"], expected_host)
         self.assertEqual(rewritten_connect["port"], 8096)
         self.assertEqual(rewritten_connect["urlBase"], "")
         self.assertEqual(rewritten_connect["serverType"], 2)
@@ -239,7 +241,7 @@ class MediaStackTests(unittest.TestCase):
                 public_hosts={"192.168.1.213"},
             )
         )
-        self.assertEqual(proxied_connect["hostname"], "host.docker.internal")
+        self.assertEqual(proxied_connect["hostname"], expected_host)
         self.assertEqual(proxied_connect["urlBase"], "")
         untouched_connect = json.loads(
             rewrite_jellyseerr_jellyfin_connect_body(
@@ -247,13 +249,13 @@ class MediaStackTests(unittest.TestCase):
                 public_hosts={"192.168.1.213"},
             )
         )
-        self.assertEqual(untouched_connect["hostname"], "host.docker.internal")
+        self.assertEqual(untouched_connect["hostname"], expected_host)
         empty_host = json.loads(
             rewrite_jellyseerr_jellyfin_connect_body(
                 b'{"hostname":"","port":8090,"urlBase":"","username":"admin"}'
             )
         )
-        self.assertEqual(empty_host["hostname"], "host.docker.internal")
+        self.assertEqual(empty_host["hostname"], expected_host)
         self.assertEqual(empty_host["port"], 8096)
         lan_host = json.loads(
             rewrite_jellyseerr_jellyfin_connect_body(
@@ -261,7 +263,7 @@ class MediaStackTests(unittest.TestCase):
                 public_hosts={"192.168.1.213"},
             )
         )
-        self.assertEqual(lan_host["hostname"], "host.docker.internal")
+        self.assertEqual(lan_host["hostname"], expected_host)
         self.assertEqual(lan_host["port"], 8096)
         relogin = json.loads(
             rewrite_jellyseerr_jellyfin_connect_body(b'{"username":"admin","password":"secret"}')
@@ -531,8 +533,8 @@ class MediaStackTests(unittest.TestCase):
             self.assertTrue(overlay.is_file())
             overlay_text = overlay.read_text(encoding="utf-8")
             self.assertIn("./jellyseerr-config:/app/config", overlay_text)
-            self.assertIn("jellyfin:host-gateway", overlay_text)
-            self.assertIn("host.docker.internal:host-gateway", overlay_text)
+            self.assertRegex(overlay_text, r"jellyfin:\d+\.\d+\.\d+\.\d+")
+            self.assertNotIn("host-gateway", overlay_text)
             command = media_compose_up_command("jellyseerr", root, force_recreate=True)
             assert command is not None
             self.assertIn(str(overlay), command)
@@ -547,7 +549,7 @@ class MediaStackTests(unittest.TestCase):
             )
             ensure_jellyseerr_config_volume(root)
             overlay_text = (root / JELLYSEERR_OVERLAY_NAME).read_text(encoding="utf-8")
-            self.assertIn("jellyfin:host-gateway", overlay_text)
+            self.assertRegex(overlay_text, r"jellyfin:\d+\.\d+\.\d+\.\d+")
             self.assertNotIn("./jellyseerr-config:/app/config", overlay_text)
 
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")

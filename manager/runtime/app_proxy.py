@@ -214,8 +214,9 @@ def rewrite_arr_initialize_json(
 def proxy_bridge_js(app_id: str) -> str:
     prefix = json.dumps(proxy_prefix(app_id))
     base = json.dumps(proxy_document_base(app_id))
+    jf_host = json.dumps(jellyfin_connect_hostname())
     return (
-        "(function(p,b){"
+        "(function(p,b,jfHost){"
         "if(window.__rockyPrefix)return;window.__rockyPrefix=p;"
         "try{if(navigator.serviceWorker){"
         "navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});"
@@ -301,12 +302,12 @@ def proxy_bridge_js(app_id: str) -> str:
         "if(d&&d.set)d.set.call(el,val);else el.value=val;"
         "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}"
         "function fillHost(){var h=document.getElementById('hostname');if(h){var cur=(h.value||'').trim().toLowerCase();"
-        "if(!cur||cur==='localhost'||cur==='127.0.0.1'||cur==='0.0.0.0'||cur==='jellyfin'||cur.indexOf('proxy')>=0)setv(h,'host.docker.internal');}"
+        "if(!cur||cur==='localhost'||cur==='127.0.0.1'||cur==='0.0.0.0'||cur==='jellyfin'||cur==='host.docker.internal'||cur.indexOf('proxy')>=0)setv(h,jfHost);}"
         "var port=document.getElementById('port');if(port){var pv=(port.value||'').trim();"
         "if(!pv||pv==='8090'||pv==='80')setv(port,'8096');}"
         "var ub=document.getElementById('urlBase');if(ub&&/proxy/i.test(ub.value||''))setv(ub,'');}"
         "var n=0,t=setInterval(function(){fillHost();if(++n>48)clearInterval(t);},250);fillHost();}"
-        "})(" + prefix + "," + base + ");"
+        "})(" + prefix + "," + base + "," + jf_host + ");"
     )
 
 

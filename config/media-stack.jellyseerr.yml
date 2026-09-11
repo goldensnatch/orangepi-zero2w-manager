@@ -1,12 +1,10 @@
-# Merged with runtime/media-stack/docker-compose.yml.
-# Bind-mount /app/config so setup survives restarts, and alias jellyfin
-# to the host gateway. Jellyseerr 2.7.3 treats a failed TCP/DNS lookup as
-# INVALID_URL 404; compose service DNS often does not reach a host-network
-# or published Jellyfin on :8096.
+# Rocky generates runtime/media-stack/docker-compose.jellyseerr.yml from this
+# shape, substituting a literal Docker bridge IP (not host-gateway).
+# host.docker.internal does not resolve in the Jellyseerr image on Linux.
 services:
   jellyseerr:
     extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "jellyfin:host-gateway"
+      - "host.docker.internal:172.17.0.1"
+      - "jellyfin:172.17.0.1"
     volumes:
       - ./jellyseerr-config:/app/config
