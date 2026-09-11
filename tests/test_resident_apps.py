@@ -174,10 +174,8 @@ class ResidentAppTests(unittest.TestCase):
         print_lab_fn = daemon.split("elif effective_mode_id == 'print_lab':", 1)[1].split(
             "else:", 1
         )[0]
-        self.assertNotIn("ensure_media(False)", print_lab_fn)
-        self.assertNotIn("print_lab: stopping %s", print_lab_fn)
-        self.assertIn("Additive with entertainment and fortress", print_lab_fn)
-        self.assertIn("ADDITIVE_STACK_MODES", daemon)
+        self.assertIn("ensure_media(False)", print_lab_fn)
+        self.assertIn("print_lab: stopping %s", print_lab_fn)
         self.assertIn("Keeping %s; %s is additive with %s", daemon)
         self.assertIn("desired_mode_signature(request)", daemon)
         self.assertIn("_lightweight_mode_footer_text", daemon)
