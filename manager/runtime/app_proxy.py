@@ -526,6 +526,7 @@ def rewrite_jellyseerr_jellyfin_connect_body(
     data["port"] = int(jellyfin["port"])
     data["urlBase"] = ""
     data["useSsl"] = False
+    data["serverType"] = 2  # Jellyseerr MediaServerType.JELLYFIN
     return json.dumps(data).encode("utf-8")
 
 

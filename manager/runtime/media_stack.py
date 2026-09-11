@@ -14,8 +14,17 @@ JELLYSEERR_OVERLAY_NAME = "docker-compose.jellyseerr.yml"
 JELLYSEERR_OVERLAY_TEMPLATE = Path(__file__).resolve().parents[2] / "config" / "media-stack.jellyseerr.yml"
 _JELLYSEERR_OVERLAY_FALLBACK = """services:
   jellyseerr:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "jellyfin:host-gateway"
     volumes:
       - ./jellyseerr-config:/app/config
+"""
+_JELLYSEERR_OVERLAY_HOSTS_ONLY = """services:
+  jellyseerr:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "jellyfin:host-gateway"
 """
 
 MEDIA_STACK_APPS: dict[str, dict[str, Any]] = {
@@ -117,10 +126,12 @@ def entertainment_menu_items() -> list[dict[str, str]]:
     return items
 
 
-def jellyseerr_overlay_text() -> str:
-    if JELLYSEERR_OVERLAY_TEMPLATE.is_file():
+def jellyseerr_overlay_text(*, include_config_volume: bool = True) -> str:
+    if include_config_volume and JELLYSEERR_OVERLAY_TEMPLATE.is_file():
         return JELLYSEERR_OVERLAY_TEMPLATE.read_text(encoding="utf-8")
-    return _JELLYSEERR_OVERLAY_FALLBACK
+    if include_config_volume:
+        return _JELLYSEERR_OVERLAY_FALLBACK
+    return _JELLYSEERR_OVERLAY_HOSTS_ONLY
 
 
 def ensure_jellyseerr_config_volume(root: Path | None = None) -> Path:
@@ -134,9 +145,10 @@ def ensure_jellyseerr_config_volume(root: Path | None = None) -> Path:
         pass
     overlay = stack_root / JELLYSEERR_OVERLAY_NAME
     compose = stack_root / "docker-compose.yml"
+    include_volume = True
     if compose.is_file() and "/app/config" in compose.read_text(encoding="utf-8", errors="replace"):
-        return config_dir
-    desired = jellyseerr_overlay_text()
+        include_volume = False
+    desired = jellyseerr_overlay_text(include_config_volume=include_volume)
     current = overlay.read_text(encoding="utf-8", errors="replace") if overlay.is_file() else ""
     if current != desired:
         overlay.write_text(desired, encoding="utf-8")
@@ -205,9 +217,33 @@ def container_has_destination_mount(container: str, destination: str = "/app/con
     return False
 
 
+def container_has_jellyfin_host_alias(container: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{json .HostConfig.ExtraHosts}}", container],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        hosts = json.loads(result.stdout or "null")
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(hosts, list):
+        return False
+    return any(str(host).startswith("jellyfin:") for host in hosts)
+
+
 def jellyseerr_needs_volume_recreate(
     container: str,
     root: Path | None = None,
 ) -> bool:
     ensure_jellyseerr_config_volume(root)
-    return not container_has_destination_mount(container, "/app/config")
+    if not container_has_destination_mount(container, "/app/config"):
+        return True
+    return not container_has_jellyfin_host_alias(container)

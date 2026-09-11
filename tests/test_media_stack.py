@@ -232,6 +232,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertEqual(rewritten_connect["hostname"], "jellyfin")
         self.assertEqual(rewritten_connect["port"], 8096)
         self.assertEqual(rewritten_connect["urlBase"], "")
+        self.assertEqual(rewritten_connect["serverType"], 2)
         proxied_connect = json.loads(
             rewrite_jellyseerr_jellyfin_connect_body(
                 b'{"hostname":"192.168.1.213","port":8090,"urlBase":"/proxy/jellyfin","username":"admin"}',
@@ -529,6 +530,7 @@ class MediaStackTests(unittest.TestCase):
             overlay = root / JELLYSEERR_OVERLAY_NAME
             self.assertTrue(overlay.is_file())
             self.assertIn("./jellyseerr-config:/app/config", overlay.read_text(encoding="utf-8"))
+            self.assertIn("jellyfin:host-gateway", overlay.read_text(encoding="utf-8"))
             command = media_compose_up_command("jellyseerr", root, force_recreate=True)
             assert command is not None
             self.assertIn(str(overlay), command)
@@ -542,7 +544,9 @@ class MediaStackTests(unittest.TestCase):
                 encoding="utf-8",
             )
             ensure_jellyseerr_config_volume(root)
-            self.assertFalse((root / JELLYSEERR_OVERLAY_NAME).is_file())
+            overlay_text = (root / JELLYSEERR_OVERLAY_NAME).read_text(encoding="utf-8")
+            self.assertIn("jellyfin:host-gateway", overlay_text)
+            self.assertNotIn("./jellyseerr-config:/app/config", overlay_text)
 
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         self.assertIn("jellyseerr_needs_volume_recreate", source)
