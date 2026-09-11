@@ -565,6 +565,9 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("decode_upstream_payload", proxy_fn)
         self.assertIn("upstream_starting_page", proxy_fn)
         self.assertIn("wants_upstream_wait_page", proxy_fn)
+        self.assertIn("proxy_retry_seconds(app_id, target_path)", proxy_fn)
+        self.assertIn("upstream_unavailable_error_response", proxy_fn)
+        self.assertNotIn("Proxy unavailable", proxy_fn)
         self.assertIn("map_jellyfin_upstream_path", proxy_fn)
         self.assertIn("rewrite_jellyseerr_jellyfin_connect_body", proxy_fn)
         self.assertIn("path=target_path", proxy_fn)
@@ -581,7 +584,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("print_lab_activate_mode(current)", source)
         self.assertIn("entertainment apps stay running", source)
         self.assertIn("proxy_retry_seconds", proxy_fn)
-        self.assertIn("upstream_unavailable_api_payload", proxy_fn)
+        self.assertIn("upstream_unavailable_error_response", proxy_fn)
         before_retry, _, after_retry = proxy_fn.partition("deadline = time.time() + retry_seconds")
         self.assertIn("_ensure_media_app_starting", before_retry)
         self.assertIn("_ensure_transfer_stack_starting", before_retry)
@@ -610,6 +613,7 @@ class MediaStackTests(unittest.TestCase):
             proxy_retry_seconds,
             upstream_starting_page,
             upstream_unavailable_api_payload,
+            upstream_unavailable_error_response,
             wants_upstream_wait_page,
         )
         from manager.runtime.media_stack import (
@@ -673,15 +677,37 @@ class MediaStackTests(unittest.TestCase):
         self.assertTrue(any("SID=one" in cookie and "Path=/" in cookie for cookie in cookies))
         self.assertNotIn("Set-Cookie", _headers)
         self.assertNotIn("set-cookie", {name.lower() for name in _headers})
+        html_accept = "text/html,application/xhtml+xml"
+        json_accept = "application/json"
+        self.assertTrue(wants_upstream_wait_page("GET", "/", html_accept))
         self.assertTrue(
-            wants_upstream_wait_page("GET", "/", "text/html,application/xhtml+xml")
+            wants_upstream_wait_page("GET", "/web/", html_accept, app_id="jellyfin")
         )
         self.assertFalse(
-            wants_upstream_wait_page("GET", "/api/v1/system/status", "application/json")
+            wants_upstream_wait_page(
+                "GET", "/System/Info/Public", json_accept, app_id="jellyfin"
+            )
+        )
+        self.assertFalse(
+            wants_upstream_wait_page(
+                "GET", "/api/v1/system/status", json_accept, app_id="jellyseerr"
+            )
         )
         wait_html = upstream_starting_page("jellyseerr")
         self.assertIn(b"Starting Jellyseerr", wait_html)
         self.assertIn(b'meta http-equiv="refresh" content="2"', wait_html)
+        self.assertGreater(
+            proxy_retry_seconds("jellyfin", "/System/Info/Public"),
+            proxy_retry_seconds("jellyfin", "/web/main.css"),
+        )
+        json_body = upstream_unavailable_api_payload("radarr")
+        self.assertNotIn(b"<html", json_body)
+        self.assertIn(b"upstream_unavailable", json_body)
+        plain, plain_headers = upstream_unavailable_error_response(
+            "sonarr", "/Content/styles.css"
+        )
+        self.assertIn("text/plain", plain_headers["Content-Type"])
+        self.assertNotIn(b"<html", plain)
         mixed_accept = "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
         self.assertFalse(
             wants_upstream_wait_page("GET", "/System/Info/Public", mixed_accept, "jellyfin")
@@ -712,6 +738,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertEqual(proxy_retry_seconds("jellyfin", "/web/index.html"), 1.8)
         self.assertEqual(proxy_retry_seconds("jellyfin", "/web/main.css"), 1.8)
         self.assertEqual(proxy_retry_seconds("jellyseerr", "/"), 1.8)
+        self.assertGreater(proxy_retry_seconds("jellyseerr", "/api/v1/system/status"), 1.8)
         api_payload = json.loads(upstream_unavailable_api_payload("jellyfin"))
         self.assertEqual(api_payload["error"], "upstream_unavailable")
         self.assertEqual(api_payload["app"], "jellyfin")
@@ -770,7 +797,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("x.port)==='8096'", bridge)
         console_src = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         proxy_fn = console_src.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
-        self.assertIn("upstream_unavailable_api_payload", proxy_fn)
+        self.assertIn("upstream_unavailable_error_response", proxy_fn)
         self.assertIn("wants_upstream_wait_page", proxy_fn)
         self.assertIn('if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"}', proxy_fn)
         daemon_src = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")

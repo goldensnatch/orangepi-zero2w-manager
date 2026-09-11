@@ -70,7 +70,7 @@ from manager.runtime.app_proxy import (
     suppress_login_redirect_for_asset,
     transfer_loopback_headers,
     upstream_starting_page,
-    upstream_unavailable_api_payload,
+    upstream_unavailable_error_response,
     wants_upstream_wait_page,
 )
 from manager.runtime.service_catalog import ServiceCatalog
@@ -3951,14 +3951,11 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 extra_cookies=extra_cookies,
             )
             return
+        payload, headers = upstream_unavailable_error_response(app_id, target_path)
         self.proxy_response(
             HTTPStatus.SERVICE_UNAVAILABLE,
-            upstream_unavailable_api_payload(app_id),
-            {
-                "Content-Type": "application/json; charset=utf-8",
-                "Cache-Control": "no-store",
-                "Retry-After": "2",
-            },
+            payload,
+            headers,
             extra_headers=extra_headers,
             extra_cookies=extra_cookies,
         )

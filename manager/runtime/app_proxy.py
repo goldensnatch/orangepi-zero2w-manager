@@ -619,7 +619,8 @@ _JELLYFIN_REST_ROOTS = frozenset(
     }
 )
 _DEFAULT_PROXY_RETRY_SECONDS = 1.8
-_JELLYFIN_PUBLIC_INFO_RETRY_SECONDS = 6.0
+_HEALTH_PROXY_RETRY_SECONDS = 6.0
+_DOCUMENT_WAIT_PATHS = frozenset({"/", "/index.html", "/login"})
 
 
 def _upstream_path_only(path: str) -> str:
@@ -632,6 +633,8 @@ def _upstream_path_only(path: str) -> str:
 
 def accept_is_json_ish(accept: str) -> bool:
     accept_l = str(accept or "").lower()
+    if "text/html" in accept_l:
+        return False
     return (
         "application/json" in accept_l
         or "text/json" in accept_l
@@ -657,10 +660,28 @@ def is_jellyfin_public_system_info_path(path: str) -> bool:
     return _upstream_path_only(path).lower().rstrip("/") == "/system/info/public"
 
 
+def is_media_status_health_path(path: str) -> bool:
+    return _upstream_path_only(path).lower().rstrip("/") == "/api/v1/system/status"
+
+
+def is_media_health_endpoint(path: str) -> bool:
+    """Jellyfin public info and *arr/Jellyseerr system status — not CSS/JS."""
+    return is_jellyfin_public_system_info_path(path) or is_media_status_health_path(path)
+
+
+def is_media_document_path(path: str) -> bool:
+    """HTML GET of `/`, `/web/`, or `/login` — not REST under any media app."""
+    lowered = _upstream_path_only(path).lower()
+    if is_jellyfin_spa_path(lowered):
+        return True
+    normalized = lowered.rstrip("/") or "/"
+    return normalized in _DOCUMENT_WAIT_PATHS or lowered in _DOCUMENT_WAIT_PATHS
+
+
 def proxy_retry_seconds(app_id: str, path: str) -> float:
-    """Retry connection-refused briefly; give Jellyfin public info a longer window."""
-    if str(app_id) == "jellyfin" and is_jellyfin_public_system_info_path(path):
-        return _JELLYFIN_PUBLIC_INFO_RETRY_SECONDS
+    """Retry connection-refused briefly; health probes get a longer window."""
+    if str(app_id) in MEDIA_STACK_APPS and is_media_health_endpoint(path):
+        return _HEALTH_PROXY_RETRY_SECONDS
     return _DEFAULT_PROXY_RETRY_SECONDS
 
 
@@ -683,7 +704,7 @@ def wants_upstream_wait_page(
         return False
     if is_jellyfin_rest_path(path_only):
         return False
-    if str(app_id or "") == "jellyfin" and not is_jellyfin_spa_path(path_only):
+    if str(app_id or "") in MEDIA_STACK_APPS and not is_media_document_path(path_only):
         return False
     return True
 
@@ -698,6 +719,21 @@ def upstream_unavailable_api_payload(app_id: str) -> bytes:
         },
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def upstream_unavailable_error_response(app_id: str, path: str) -> tuple[bytes, dict[str, str]]:
+    """JSON for REST/XHR, plain 503 for static assets — never an HTML wait page."""
+    if is_static_asset_path(path):
+        payload: bytes = b"upstream unavailable\n"
+        content_type = "text/plain; charset=utf-8"
+    else:
+        payload = upstream_unavailable_api_payload(app_id)
+        content_type = "application/json; charset=utf-8"
+    return payload, {
+        "Content-Type": content_type,
+        "Cache-Control": "no-store",
+        "Retry-After": "2",
+    }
 
 
 def proxied_app_display_name(app_id: str) -> str:
