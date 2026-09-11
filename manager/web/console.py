@@ -35,7 +35,7 @@ from collections import defaultdict, deque
 
 from datetime import datetime, timezone
 
-from http import HTTPStatus
+from http import HTTPStatus, client as http_client
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -52,9 +52,9 @@ from manager.runtime.app_proxy import (
     LAST_PROXY_APP_COOKIE,
     decode_upstream_payload,
     filter_browser_cookies_for_upstream,
-    is_connection_refused,
     is_proxy_bridge_path,
     is_public_proxy_app,
+    is_upstream_unavailable,
     leaked_proxy_app_id,
     map_jellyfin_upstream_path,
     proxied_app_login_location,
@@ -74,10 +74,15 @@ from manager.runtime.service_catalog import ServiceCatalog
 from manager.runtime.launch_requests import catalog_proxy_url, needs_daemon_launch, write_launch_request
 from manager.runtime.media_stack import (
     MEDIA_STACK_APPS,
+    TRANSFER_PROXY_APP_IDS,
+    TRANSFER_STACK_CONTAINERS,
+    TRANSFER_STACK_LOCAL_URL,
+    is_transfer_proxy_app,
     jellyseerr_needs_volume_recreate,
     media_app_ids,
     media_compose_up_command,
     media_launch_target,
+    transfer_stack_activate_mode,
 )
 from manager.runtime.proxy_tokens import (
     build_proxy_token as mint_proxy_token,
@@ -101,6 +106,8 @@ class NoFollowRedirect(HTTPRedirectHandler):
 
 
 PROXY_OPENER = build_opener(NoFollowRedirect)
+_TRANSFER_ENSURE_LOCK = threading.Lock()
+_TRANSFER_ENSURE_AT = 0.0
 
 
 def _env_credential(name: str, default: str = "") -> str:
@@ -1788,16 +1795,26 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         )
 
+    def send_console_failure(self, where: str, exc: BaseException) -> None:
+        self.log_error("%s failed: %s", where, exc)
+        try:
+            detail = f"{type(exc).__name__}: {exc}"
+            self.send_html(
+                "Console error",
+                "<section><h2>Rocky console request failed</h2>"
+                f"<p>{html.escape(where)}</p>"
+                f"<pre>{html.escape(detail)}</pre></section>",
+                status=500,
+            )
+        except Exception:
+            self.close_connection = True
+
     def handle_one_request(self) -> None:
         """Never close the socket with zero bytes; Chrome shows ERR_EMPTY_RESPONSE."""
         try:
             super().handle_one_request()
         except Exception as exc:
-            self.log_error("Request failed: %s", exc)
-            try:
-                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Rocky console request failed")
-            except Exception:
-                self.close_connection = True
+            self.send_console_failure("Request", exc)
 
 
 
@@ -2417,11 +2434,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         try:
             self._handle_get()
         except Exception as exc:
-            self.log_error("GET failed: %s", exc)
-            try:
-                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Rocky console request failed")
-            except Exception:
-                self.close_connection = True
+            self.send_console_failure("GET", exc)
 
     def _handle_get(self) -> None:
 
@@ -2512,11 +2525,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         try:
             self._handle_post()
         except Exception as exc:
-            self.log_error("POST failed: %s", exc)
-            try:
-                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Rocky console request failed")
-            except Exception:
-                self.close_connection = True
+            self.send_console_failure("POST", exc)
 
     def _handle_post(self) -> None:
         request = urlparse(self.path)
@@ -3229,8 +3238,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
     def proxy_base_for_app(self, app_id: str) -> str | None:
 
-        if app_id == "transfer-stack":
-            return "http://127.0.0.1:8088"
+        if is_transfer_proxy_app(app_id):
+            return TRANSFER_STACK_LOCAL_URL
         service = ServiceCatalog().get(app_id)
         if not service:
             return None
@@ -3363,6 +3372,76 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             "detail": "\n".join(d for d in details if d),
         }
 
+    def _activate_transfer_mode(self, *, force_torrent_fortress: bool = False) -> None:
+        current = str(self.load_current_mode_request_snapshot().get("selected_mode_id") or "")
+        mode = transfer_stack_activate_mode(
+            current, force_torrent_fortress=force_torrent_fortress
+        )
+        if not mode:
+            return
+        self.apply_app_activation_mode({"activate_mode": mode}, "transfer-stack")
+
+    def _start_transfer_containers(self) -> None:
+        for container in TRANSFER_STACK_CONTAINERS:
+            try:
+                subprocess.run(
+                    ["docker", "start", container],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=15,
+                )
+            except Exception as exc:
+                self.log_error("docker start %s failed: %s", container, exc)
+
+    def _ensure_transfer_stack_starting(self, *, app_id: str = "transfer-stack") -> None:
+        global _TRANSFER_ENSURE_AT
+        with _TRANSFER_ENSURE_LOCK:
+            now = time.monotonic()
+            if now - _TRANSFER_ENSURE_AT < 4.0:
+                return
+            _TRANSFER_ENSURE_AT = now
+        try:
+            self._activate_transfer_mode()
+        except OSError as exc:
+            self.log_error("Torrentz mode activation failed: %s", exc)
+        try:
+            write_launch_request(app_id, source="console-proxy")
+        except OSError as exc:
+            self.log_error("Torrentz launch request failed: %s", exc)
+        self._start_transfer_containers()
+
+    def _launch_transfer_stack(self, app_id: str) -> None:
+        try:
+            self._activate_transfer_mode(force_torrent_fortress=(app_id == "torrentz"))
+        except OSError as exc:
+            self.send_json_error(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "mode_activation_failed",
+                app_id=app_id,
+                detail=str(exc),
+                source=str(CURRENT_MODE_REQUEST_PATH),
+            )
+            return
+        try:
+            write_launch_request(app_id, source="console")
+        except OSError as exc:
+            self.log_error("Torrentz launch request failed: %s", exc)
+        self._start_transfer_containers()
+        open_url = (
+            self.proxy_public_url(app_id)
+            + f"?access_token={quote(self.build_proxy_token(app_id))}"
+        )
+        self.send_json(
+            {
+                "ok": True,
+                "app_id": app_id,
+                "status": "starting",
+                "open_url": open_url,
+                "detail": "starting qBittorrent via torrent_fortress / entertainment",
+            }
+        )
+
     def handle_app_launch(self, request: dict[str, object]) -> None:
         app_id = str(request.get("id") or request.get("app_id") or "").strip()
         if not app_id:
@@ -3388,6 +3467,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             payload = self._start_media_app(app_id)
             payload["open_url"] = self._tokenized_media_url(app_id)
             self.send_json(payload, status=HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_GATEWAY)
+            return
+
+        if app_id in TRANSFER_PROXY_APP_IDS:
+            self._launch_transfer_stack(app_id)
             return
 
         service = ServiceCatalog().get(app_id)
@@ -3703,11 +3786,11 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         proxy_request.add_header("Accept-Encoding", "identity")
         proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
         proxy_request.add_header("X-Forwarded-Proto", "http")
-        if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"}:
+        if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi", "transfer-stack", "torrentz"}:
             proxy_request.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
         proxy_timeout = 60 if app_id == "jellyseerr" and method in {"POST", "PUT", "PATCH"} else 20
         deadline = time.time() + 1.8
-        last_url_error: URLError | None = None
+        last_url_error: BaseException | None = None
         while True:
             try:
                 with PROXY_OPENER.open(proxy_request, timeout=proxy_timeout) as response:
@@ -3765,9 +3848,26 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 return
             except URLError as exc:
                 last_url_error = exc
-                if not is_connection_refused(exc) or time.time() >= deadline:
+                if not is_upstream_unavailable(exc) or time.time() >= deadline:
                     break
                 time.sleep(0.45)
+            except (TimeoutError, OSError, http_client.HTTPException) as exc:
+                last_url_error = exc
+                if not is_upstream_unavailable(exc) or time.time() >= deadline:
+                    break
+                time.sleep(0.45)
+            except Exception as exc:
+                self.log_error("Proxy %s failed: %s", app_id, exc)
+                self.send_html(
+                    "Proxy failed",
+                    "<section><h2>Rocky proxy failed</h2>"
+                    f"<p>{html.escape(app_id)}</p>"
+                    f"<pre>{html.escape(f'{type(exc).__name__}: {exc}')}</pre></section>",
+                    status=500,
+                )
+                return
+        if is_transfer_proxy_app(app_id):
+            self._ensure_transfer_stack_starting(app_id=app_id)
         if last_url_error is not None and wants_upstream_wait_page(
             method, target_path, self.headers.get("Accept", "")
         ):
@@ -3783,7 +3883,13 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 extra_cookies=extra_cookies,
             )
             return
-        self.send_json_error(HTTPStatus.BAD_GATEWAY, "proxy_failed", detail=str(last_url_error or "proxy_failed"))
+        self.send_html(
+            "Proxy unavailable",
+            "<section><h2>App is not reachable</h2>"
+            f"<p>{html.escape(app_id)} did not respond.</p>"
+            f"<pre>{html.escape(str(last_url_error or 'proxy_failed'))}</pre></section>",
+            status=HTTPStatus.BAD_GATEWAY,
+        )
         return
 
     def handle_apps(self) -> None:
@@ -3837,7 +3943,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             if entry.get("open_url"):
                 safe_url = html.escape(str(entry["open_url"]))
                 safe_app_id = html.escape(eid)
-                app_id_attr = f' data-app-id="{safe_app_id}"' if eid != "transfer-stack" else ""
+                app_id_attr = f' data-app-id="{safe_app_id}"'
                 actions_html += (
                     f'<a href="{safe_url}" target="_blank" rel="noopener" '
                     f'class="{launch_cls}"{app_id_attr}>&#x25BA; LAUNCH</a>'

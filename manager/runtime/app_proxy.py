@@ -6,7 +6,13 @@ import re
 import zlib
 from urllib.parse import parse_qsl, urlencode, urlparse
 
-from manager.runtime.media_stack import MEDIA_STACK_APPS, jellyfin_connect_hostname, media_app_ids, media_connect_hostname
+from manager.runtime.media_stack import (
+    MEDIA_STACK_APPS,
+    TRANSFER_PROXY_APP_IDS,
+    jellyfin_connect_hostname,
+    media_app_ids,
+    media_connect_hostname,
+)
 
 
 HOP_BY_HOP_HEADERS = {
@@ -85,7 +91,7 @@ _ROOT_SERVICE_WORKERS = frozenset({"serviceworker.js", "service-worker.js", "sw.
 
 
 def public_proxy_app_ids() -> frozenset[str]:
-    return frozenset(media_app_ids()) | {"transfer-stack"}
+    return frozenset(media_app_ids()) | TRANSFER_PROXY_APP_IDS
 
 
 def is_public_proxy_app(app_id: str) -> bool:
@@ -431,6 +437,34 @@ def decode_upstream_payload(payload: bytes, headers) -> bytes:
     return bytes(body)
 
 
+_UNAVAILABLE_ERRNOS = {32, 61, 101, 103, 104, 110, 111, 113}
+_UNAVAILABLE_EXC_NAMES = {
+    "timeout",
+    "timeouterror",
+    "remotedisconnected",
+    "incompleteread",
+    "badstatusline",
+    "connectionreseterror",
+    "connectionabortederror",
+    "brokenpipeerror",
+}
+_UNAVAILABLE_TEXT = (
+    "connection reset",
+    "connection aborted",
+    "connection refused",
+    "timed out",
+    "timeout",
+    "remotedisconnected",
+    "incomplete read",
+    "bad status line",
+    "network is unreachable",
+    "temporarily unavailable",
+    "broken pipe",
+    "[errno 111]",
+    "[errno 104]",
+)
+
+
 def is_connection_refused(exc: BaseException) -> bool:
     reason = getattr(exc, "reason", None)
     errno = getattr(reason, "errno", None) or getattr(exc, "errno", None)
@@ -438,6 +472,29 @@ def is_connection_refused(exc: BaseException) -> bool:
         return True
     text = str(exc).lower()
     return "connection refused" in text or "[errno 111]" in text
+
+
+def is_upstream_unavailable(exc: BaseException) -> bool:
+    """True when qBittorrent/media is down, resetting, or still binding the port.
+
+    urllib often wraps these as URLError, but getresponse() can raise
+    RemoteDisconnected / TimeoutError unwrapped — that used to become a
+    stock HTTP 500 "Rocky console request failed" page.
+    """
+    if is_connection_refused(exc):
+        return True
+    chain: list[BaseException] = [exc]
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, BaseException):
+        chain.append(reason)
+    for item in chain:
+        errno = getattr(item, "errno", None)
+        if errno in _UNAVAILABLE_ERRNOS:
+            return True
+        if type(item).__name__.lower() in _UNAVAILABLE_EXC_NAMES:
+            return True
+    text = str(exc).lower()
+    return any(needle in text for needle in _UNAVAILABLE_TEXT)
 
 
 def wants_upstream_wait_page(method: str, path: str, accept: str = "") -> bool:
@@ -458,7 +515,7 @@ def proxied_app_display_name(app_id: str) -> str:
     spec = MEDIA_STACK_APPS.get(str(app_id or ""))
     if spec:
         return str(spec["name"])
-    if app_id == "transfer-stack":
+    if app_id in TRANSFER_PROXY_APP_IDS:
         return "Torrentz"
     label = re.sub(r"[^A-Za-z0-9 _.-]", "", str(app_id or "app"))
     return label or "app"

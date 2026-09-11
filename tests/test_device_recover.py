@@ -48,6 +48,24 @@ class DeviceRecoverTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first, switched)
 
+    def test_write_selected_mode_pins_torrent_fortress(self) -> None:
+        from manager.runtime.device_quiesce import write_safe_mode, write_selected_mode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mode_path = Path(tmp) / "current-mode.json"
+            write_safe_mode(mode_path, reason="test-safe")
+            payload = write_selected_mode(
+                "torrent_fortress",
+                mode_path,
+                reason="launcher_open:torrentz",
+                requested_by="console",
+            )
+            saved = json.loads(mode_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["selected_mode_id"], "torrent_fortress")
+            self.assertEqual(saved["selected_mode_id"], "torrent_fortress")
+            self.assertEqual(saved["previous_mode_id"], "safe")
+            self.assertEqual(saved["reason"], "launcher_open:torrentz")
+
     def test_quiesce_stops_radio_media_and_pins_safe_mode(self) -> None:
         from manager.runtime.device_quiesce import RADIO_UNITS, quiesce_device
         from manager.runtime.media_stack import media_container_names
@@ -164,6 +182,8 @@ class DeviceRecoverTests(unittest.TestCase):
         self.assertNotIn("docker_container_version", apps_fn)
         self.assertIn("def handle_one_request", source)
         self.assertIn("ERR_EMPTY_RESPONSE", source)
+        self.assertIn("send_console_failure", source)
+        self.assertIn("_launch_transfer_stack", source)
 
     def test_safe_mode_does_not_start_pihole_or_gluetun(self) -> None:
         daemon = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")

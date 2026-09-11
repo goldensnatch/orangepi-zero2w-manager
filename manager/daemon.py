@@ -26,12 +26,14 @@ from manager.runtime.device_quiesce import (
     stop_media_workloads,
     stop_radio_workloads,
     write_safe_mode,
+    write_selected_mode,
 )
 from manager.runtime.launch_requests import catalog_proxy_url, catalog_start_units, consume_launch_request
 from manager.runtime.media_stack import (
     MEDIA_STACK_APPS,
     MEDIA_STACK_COMPOSE,
     MEDIA_STACK_ROOT,
+    TRANSFER_PROXY_APP_IDS,
     jellyseerr_needs_volume_recreate,
     media_compose_up_command,
 )
@@ -3480,8 +3482,28 @@ class ManagerDaemon:
             self._last_mode_signature = None
             stop_media_workloads()
             return
-        if app_id in MEDIA_STACK_APPS or app_id in {"3d_printer", "transfer-stack"}:
+        if app_id in MEDIA_STACK_APPS or app_id in {"3d_printer"} | TRANSFER_PROXY_APP_IDS:
             stop_radio_workloads()
+
+    def _start_transfer_stack_from_console(self, app_id: str) -> None:
+        self._prepare_exclusive_workload("transfer-stack")
+        request = self._load_current_mode_request()
+        mode_id = str(request.get("selected_mode_id") or "").strip()
+        if mode_id not in {"torrent_fortress", "entertainment"}:
+            write_selected_mode(
+                "torrent_fortress",
+                reason=f"launcher_open:{app_id}",
+                requested_by="console",
+                previous=request if isinstance(request, dict) else None,
+            )
+            mode_id = "torrent_fortress"
+        self._last_mode_signature = None
+        self._reconcile_mode_actions(mode_id)
+        if app_id != "torrentz":
+            return
+        service = self._service_configuration("torrentz")
+        if self._is_resident_display_app(service) or self._is_systemd_display_service(service):
+            self._resume_service_to_foreground(service)
 
     def _apply_console_launch_request(self) -> None:
         request = consume_launch_request()
@@ -3489,6 +3511,24 @@ class ManagerDaemon:
             return
         app_id = str(request.get("app_id") or "").strip()
         if not app_id:
+            return
+        if app_id in TRANSFER_PROXY_APP_IDS:
+            self.log.info(
+                "Console requested launch of %s (source=%s)",
+                app_id,
+                request.get("source") or "console",
+            )
+            try:
+                if should_shed_workloads():
+                    self.log.warning(
+                        "Refusing to launch %s while loadavg=%.2f",
+                        app_id,
+                        loadavg_1(),
+                    )
+                    return
+                self._start_transfer_stack_from_console(app_id)
+            except Exception:
+                self.log.exception("Console launch of %s failed", app_id)
             return
         try:
             service = self._service_configuration(app_id)

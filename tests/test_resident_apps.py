@@ -144,11 +144,15 @@ class ResidentAppTests(unittest.TestCase):
         self.assertIn("_resume_service_to_foreground", apply_fn)
         self.assertIn("_prepare_exclusive_workload", apply_fn)
         self.assertIn("should_shed_workloads", apply_fn)
+        self.assertIn("TRANSFER_PROXY_APP_IDS", apply_fn)
+        self.assertIn("_start_transfer_stack_from_console", apply_fn)
         self.assertNotIn(
             "self._run_systemctl(\"start\", units)\n            if self._is_resident_display_app",
             apply_fn,
         )
         daemon = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")
+        self.assertIn("_start_transfer_stack_from_console", daemon)
+        self.assertIn("write_selected_mode", daemon)
         self.assertIn("desired_mode_signature(request)", daemon)
         self.assertIn("_lightweight_mode_footer_text", daemon)
         self.assertIn("self._enforce_mode_exclusions()", daemon)

@@ -69,10 +69,12 @@ def default_runner(
         return subprocess.CompletedProcess(command, 124, stdout, stderr or "timeout")
 
 
-def write_safe_mode(
+def write_selected_mode(
+    mode_id: str,
     path: Path | None = None,
     *,
-    reason: str = "device_quiesce",
+    reason: str = "mode_write",
+    requested_by: str = "device_quiesce",
     previous: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = Path(path or CURRENT_MODE_REQUEST_PATH)
@@ -84,12 +86,13 @@ def write_safe_mode(
                 existing = loaded
         except (OSError, json.JSONDecodeError):
             existing = {}
+    selected = str(mode_id or "safe").strip() or "safe"
     payload = {
         "version": int(existing.get("version", 1) or 1),
-        "selected_mode_id": "safe",
+        "selected_mode_id": selected,
         "previous_mode_id": str(existing.get("selected_mode_id") or "safe"),
         "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "requested_by": "device_quiesce",
+        "requested_by": requested_by,
         "reason": reason,
         "override_flags": existing.get("override_flags", {})
         if isinstance(existing.get("override_flags"), dict)
@@ -100,6 +103,21 @@ def write_safe_mode(
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     temporary.replace(target)
     return payload
+
+
+def write_safe_mode(
+    path: Path | None = None,
+    *,
+    reason: str = "device_quiesce",
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return write_selected_mode(
+        "safe",
+        path,
+        reason=reason,
+        requested_by="device_quiesce",
+        previous=previous,
+    )
 
 
 def _run(

@@ -16,6 +16,13 @@ JELLYSEERR_OVERLAY_NAME = "docker-compose.jellyseerr.yml"
 _DEFAULT_DOCKER_GATEWAY = "172.17.0.1"
 _IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
+# qBittorrent WebUI. Catalog id is "torrentz"; the console proxy id is "transfer-stack".
+TRANSFER_PROXY_APP_IDS = frozenset({"transfer-stack", "torrentz"})
+TRANSFER_STACK_PORT = 8088
+TRANSFER_STACK_LOCAL_URL = "http://127.0.0.1:8088"
+TRANSFER_STACK_CONTAINERS = ("rocky-transfer-gluetun", "rocky-transfer-qbittorrent")
+TRANSFER_MODES_KEEP_QBITTORRENT = frozenset({"torrent_fortress", "entertainment"})
+
 MEDIA_STACK_APPS: dict[str, dict[str, Any]] = {
     "jellyfin": {
         "compose_service": "jellyfin",
@@ -94,6 +101,27 @@ def media_launch_target(app_id: str) -> dict[str, Any] | None:
         "name": str(spec["name"]),
         "description": str(spec["description"]),
     }
+
+
+def is_transfer_proxy_app(app_id: str) -> bool:
+    return str(app_id or "") in TRANSFER_PROXY_APP_IDS
+
+
+def transfer_stack_activate_mode(
+    current_mode: str,
+    *,
+    force_torrent_fortress: bool = False,
+) -> str | None:
+    """Mode to write so the daemon will not immediately docker-stop qBittorrent.
+
+    Safe mode (and recover) stops the downloader. Entertainment already starts it.
+    The Torrentz catalog app itself requests torrent_fortress.
+    """
+    if force_torrent_fortress:
+        return "torrent_fortress"
+    if str(current_mode or "").strip() in TRANSFER_MODES_KEEP_QBITTORRENT:
+        return None
+    return "torrent_fortress"
 
 
 def entertainment_menu_items() -> list[dict[str, str]]:

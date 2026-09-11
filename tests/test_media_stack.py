@@ -334,10 +334,11 @@ class MediaStackTests(unittest.TestCase):
 
         self.assertTrue(is_public_proxy_app("jellyfin"))
         self.assertTrue(is_public_proxy_app("transfer-stack"))
+        self.assertTrue(is_public_proxy_app("torrentz"))
         self.assertFalse(is_public_proxy_app("pikvm"))
         self.assertEqual(
             public_proxy_app_ids(),
-            frozenset(MEDIA_STACK_APPS) | {"transfer-stack"},
+            frozenset(MEDIA_STACK_APPS) | {"transfer-stack", "torrentz"},
         )
         self.assertEqual(
             proxied_app_login_location(
@@ -464,6 +465,14 @@ class MediaStackTests(unittest.TestCase):
             ),
             "transfer-stack",
         )
+        self.assertEqual(
+            leaked_proxy_app_id(
+                path="/api/v2/auth/login",
+                referer="",
+                last_app_id="torrentz",
+            ),
+            "torrentz",
+        )
         self.assertIsNone(
             leaked_proxy_app_id(
                 path="/api/mode/config",
@@ -509,16 +518,45 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("is_proxy_bridge_path", proxy_fn)
         self.assertIn("proxy_bridge_js", proxy_fn)
         self.assertIn("X-Rocky-Proxy-App", proxy_fn)
-        self.assertIn('if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"}', proxy_fn)
+        self.assertIn("is_upstream_unavailable", proxy_fn)
+        self.assertIn("http_client.HTTPException", proxy_fn)
+        self.assertIn("_ensure_transfer_stack_starting", proxy_fn)
+        self.assertIn("_launch_transfer_stack", source)
+        self.assertIn("send_console_failure", source)
+        self.assertNotIn('if eid != "transfer-stack" else ""', source)
+        self.assertIn(
+            'if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi", "transfer-stack", "torrentz"}',
+            proxy_fn,
+        )
         self.assertIn('Accept-Encoding", "identity"', proxy_fn)
         self.assertNotIn('("Content-Type", "User-Agent")', proxy_fn)
+        from http.client import RemoteDisconnected
+        from urllib.error import URLError
         from manager.runtime.app_proxy import (
             is_connection_refused,
+            is_upstream_unavailable,
             upstream_starting_page,
             wants_upstream_wait_page,
         )
+        from manager.runtime.media_stack import (
+            TRANSFER_PROXY_APP_IDS,
+            transfer_stack_activate_mode,
+        )
 
+        self.assertEqual(TRANSFER_PROXY_APP_IDS, frozenset({"transfer-stack", "torrentz"}))
         self.assertTrue(is_connection_refused(OSError(111, "Connection refused")))
+        self.assertTrue(is_upstream_unavailable(OSError(111, "Connection refused")))
+        self.assertTrue(is_upstream_unavailable(ConnectionResetError(104, "Connection reset")))
+        self.assertTrue(is_upstream_unavailable(URLError(ConnectionResetError(104, "Connection reset"))))
+        self.assertTrue(is_upstream_unavailable(TimeoutError("timed out")))
+        self.assertTrue(is_upstream_unavailable(RemoteDisconnected("Remote end closed connection")))
+        self.assertEqual(transfer_stack_activate_mode("safe"), "torrent_fortress")
+        self.assertIsNone(transfer_stack_activate_mode("entertainment"))
+        self.assertIsNone(transfer_stack_activate_mode("torrent_fortress"))
+        self.assertEqual(
+            transfer_stack_activate_mode("entertainment", force_torrent_fortress=True),
+            "torrent_fortress",
+        )
         self.assertTrue(
             wants_upstream_wait_page("GET", "/", "text/html,application/xhtml+xml")
         )
@@ -531,12 +569,19 @@ class MediaStackTests(unittest.TestCase):
 
     def test_console_imports_media_stack_symbols(self) -> None:
         from manager.web import console as web_console
-        from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids, media_launch_target
+        from manager.runtime.media_stack import (
+            MEDIA_STACK_APPS,
+            TRANSFER_PROXY_APP_IDS,
+            media_app_ids,
+            media_launch_target,
+        )
 
         self.assertIs(web_console.MEDIA_STACK_APPS, MEDIA_STACK_APPS)
         self.assertIs(web_console.media_app_ids, media_app_ids)
         self.assertIs(web_console.media_launch_target, media_launch_target)
+        self.assertIs(web_console.TRANSFER_PROXY_APP_IDS, TRANSFER_PROXY_APP_IDS)
         self.assertIn("jellyfin", web_console.MEDIA_STACK_APPS)
+        self.assertIn("torrentz", web_console.TRANSFER_PROXY_APP_IDS)
 
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
