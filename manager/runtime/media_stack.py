@@ -21,7 +21,12 @@ TRANSFER_PROXY_APP_IDS = frozenset({"transfer-stack", "torrentz"})
 TRANSFER_STACK_PORT = 8088
 TRANSFER_STACK_LOCAL_URL = "http://127.0.0.1:8088"
 TRANSFER_STACK_CONTAINERS = ("rocky-transfer-gluetun", "rocky-transfer-qbittorrent")
-TRANSFER_MODES_KEEP_QBITTORRENT = frozenset({"torrent_fortress", "entertainment"})
+# Entertainment, Torrent Fortress, and Print Lab are additive. Reconcile
+# must not stop Jellyfin to start qBittorrent, stop qBittorrent to start
+# Klipper, or stop the printer to start media.
+ADDITIVE_STACK_MODES = frozenset({"entertainment", "torrent_fortress", "print_lab"})
+MODES_KEEP_MEDIA = ADDITIVE_STACK_MODES
+TRANSFER_MODES_KEEP_QBITTORRENT = ADDITIVE_STACK_MODES
 
 MEDIA_STACK_APPS: dict[str, dict[str, Any]] = {
     "jellyfin": {
@@ -112,16 +117,34 @@ def transfer_stack_activate_mode(
     *,
     force_torrent_fortress: bool = False,
 ) -> str | None:
-    """Mode to write so the daemon will not immediately docker-stop qBittorrent.
+    """Mode to write so qBittorrent stays up. Does not evict other additive modes.
 
-    Safe mode (and recover) stops the downloader. Entertainment already starts it.
-    The Torrentz catalog app itself requests torrent_fortress.
+    Safe mode stops the downloader. Entertainment, Torrent Fortress, and Print
+    Lab all keep qBittorrent, so leave those unchanged. From safe, pin fortress.
     """
     if force_torrent_fortress:
         return "torrent_fortress"
     if str(current_mode or "").strip() in TRANSFER_MODES_KEEP_QBITTORRENT:
         return None
     return "torrent_fortress"
+
+
+def media_stack_activate_mode(current_mode: str) -> str | None:
+    """Mode to write so Jellyfin stays up. Does not evict fortress or Print Lab.
+
+    Additive modes stay in place when opening Jellyfin. From safe, pin
+    entertainment.
+    """
+    if str(current_mode or "").strip() in MODES_KEEP_MEDIA:
+        return None
+    return "entertainment"
+
+
+def print_lab_activate_mode(current_mode: str) -> str | None:
+    """Mode to write so Klipper stays up. Does not evict media or Torrentz."""
+    if str(current_mode or "").strip() in ADDITIVE_STACK_MODES:
+        return None
+    return "print_lab"
 
 
 def entertainment_menu_items() -> list[dict[str, str]]:

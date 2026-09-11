@@ -83,6 +83,8 @@ from manager.runtime.media_stack import (
     media_app_ids,
     media_compose_up_command,
     media_launch_target,
+    media_stack_activate_mode,
+    print_lab_activate_mode,
     transfer_stack_activate_mode,
 )
 from manager.runtime.proxy_tokens import (
@@ -109,6 +111,8 @@ class NoFollowRedirect(HTTPRedirectHandler):
 PROXY_OPENER = build_opener(NoFollowRedirect)
 _TRANSFER_ENSURE_LOCK = threading.Lock()
 _TRANSFER_ENSURE_AT = 0.0
+_MEDIA_ENSURE_LOCK = threading.Lock()
+_MEDIA_ENSURE_AT: dict[str, float] = {}
 
 
 def _env_credential(name: str, default: str = "") -> str:
@@ -3406,9 +3410,53 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             self.log_error("Torrentz launch request failed: %s", exc)
         self._start_transfer_containers()
 
+    def _kick_media_container(self, app_id: str) -> None:
+        target = self._media_launch_target(app_id)
+        if not target:
+            return
+        port = int(target["port"])
+        if self._tcp_port_open(port, timeout=0.2):
+            return
+        container = str(target["container"])
+        compose_service = str(target["compose_service"])
+        compose_dir = PROJECT_ROOT / "runtime" / "media-stack"
+        command = media_compose_up_command(compose_service, compose_dir, force_recreate=False)
+        try:
+            subprocess.Popen(
+                command or ["docker", "start", container],
+                cwd=str(compose_dir) if command and compose_dir.exists() else None,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as exc:
+            self.log_error("media start %s failed: %s", app_id, exc)
+
+    def _ensure_media_app_starting(self, app_id: str) -> None:
+        if app_id not in MEDIA_STACK_APPS:
+            return
+        global _MEDIA_ENSURE_AT
+        with _MEDIA_ENSURE_LOCK:
+            now = time.monotonic()
+            if now - _MEDIA_ENSURE_AT.get(app_id, 0.0) < 4.0:
+                return
+            _MEDIA_ENSURE_AT[app_id] = now
+        try:
+            current = str(self.load_current_mode_request_snapshot().get("selected_mode_id") or "")
+            mode = media_stack_activate_mode(current)
+            if mode:
+                self.apply_app_activation_mode({"activate_mode": mode}, app_id)
+        except OSError as exc:
+            self.log_error("Entertainment mode activation failed: %s", exc)
+        try:
+            write_launch_request(app_id, source="console-proxy")
+        except OSError as exc:
+            self.log_error("Media launch request failed: %s", exc)
+        self._kick_media_container(app_id)
+
     def _launch_transfer_stack(self, app_id: str) -> None:
         try:
-            self._activate_transfer_mode(force_torrent_fortress=(app_id == "torrentz"))
+            self._activate_transfer_mode()
         except OSError as exc:
             self.send_json_error(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -3433,7 +3481,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 "app_id": app_id,
                 "status": "starting",
                 "open_url": open_url,
-                "detail": "starting qBittorrent via torrent_fortress / entertainment",
+                "detail": "starting qBittorrent; entertainment apps stay running",
             }
         )
 
@@ -3445,11 +3493,11 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         media_target = self._media_launch_target(app_id)
         if media_target:
-            service = ServiceCatalog().get(app_id) or {"activate_mode": "entertainment"}
-            if not str(service.get("activate_mode") or "").strip():
-                service["activate_mode"] = "entertainment"
             try:
-                self.apply_app_activation_mode(service, app_id)
+                current = str(self.load_current_mode_request_snapshot().get("selected_mode_id") or "")
+                mode = media_stack_activate_mode(current)
+                if mode:
+                    self.apply_app_activation_mode({"activate_mode": mode}, app_id)
             except OSError as exc:
                 self.send_json_error(
                     HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -3459,6 +3507,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     source=str(CURRENT_MODE_REQUEST_PATH),
                 )
                 return
+            try:
+                write_launch_request(app_id, source="console")
+            except OSError as exc:
+                self.log_error("Media launch request failed: %s", exc)
             payload = self._start_media_app(app_id)
             payload["open_url"] = self._tokenized_media_url(app_id)
             self.send_json(payload, status=HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_GATEWAY)
@@ -3486,7 +3538,14 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         actions: list[str] = []
         mode_request: dict[str, object] | None = None
         try:
-            mode_request = self.apply_app_activation_mode(service, app_id)
+            requested_mode = str(service.get("activate_mode") or "").strip()
+            if requested_mode == "print_lab":
+                current = str(self.load_current_mode_request_snapshot().get("selected_mode_id") or "")
+                mode = print_lab_activate_mode(current)
+                if mode:
+                    mode_request = self.apply_app_activation_mode({"activate_mode": mode}, app_id)
+            else:
+                mode_request = self.apply_app_activation_mode(service, app_id)
         except OSError as exc:
             self.send_json_error(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -3790,6 +3849,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             proxy_request.add_header("X-Forwarded-Proto", "http")
         if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"} | TRANSFER_PROXY_APP_IDS:
             proxy_request.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
+        if is_transfer_proxy_app(app_id):
+            self._ensure_transfer_stack_starting(app_id=app_id)
+        elif app_id in MEDIA_STACK_APPS:
+            self._ensure_media_app_starting(app_id)
         proxy_timeout = 60 if app_id == "jellyseerr" and method in {"POST", "PUT", "PATCH"} else 20
         deadline = time.time() + 1.8
         last_url_error: BaseException | None = None
@@ -3870,8 +3933,6 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     status=500,
                 )
                 return
-        if is_transfer_proxy_app(app_id):
-            self._ensure_transfer_stack_starting(app_id=app_id)
         if last_url_error is not None and wants_upstream_wait_page(
             method, target_path, self.headers.get("Accept", "")
         ):

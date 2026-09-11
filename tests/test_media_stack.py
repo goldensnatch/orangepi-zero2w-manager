@@ -570,7 +570,12 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("is_upstream_unavailable", proxy_fn)
         self.assertIn("http_client.HTTPException", proxy_fn)
         self.assertIn("_ensure_transfer_stack_starting", proxy_fn)
+        self.assertIn("_ensure_media_app_starting", proxy_fn)
+        self.assertIn("MEDIA_STACK_APPS", proxy_fn)
         self.assertIn("_launch_transfer_stack", source)
+        self.assertIn("media_stack_activate_mode(current)", source)
+        self.assertIn("print_lab_activate_mode(current)", source)
+        self.assertIn("entertainment apps stay running", source)
         self.assertIn("send_console_failure", source)
         self.assertNotIn('if eid != "transfer-stack" else ""', source)
         self.assertNotIn('next_path == "/apps" and last_app', source)
@@ -595,6 +600,8 @@ class MediaStackTests(unittest.TestCase):
         )
         from manager.runtime.media_stack import (
             TRANSFER_PROXY_APP_IDS,
+            media_stack_activate_mode,
+            print_lab_activate_mode,
             transfer_stack_activate_mode,
         )
 
@@ -612,6 +619,15 @@ class MediaStackTests(unittest.TestCase):
             transfer_stack_activate_mode("entertainment", force_torrent_fortress=True),
             "torrent_fortress",
         )
+        self.assertEqual(media_stack_activate_mode("safe"), "entertainment")
+        self.assertIsNone(media_stack_activate_mode("entertainment"))
+        self.assertIsNone(media_stack_activate_mode("torrent_fortress"))
+        self.assertIsNone(media_stack_activate_mode("print_lab"))
+        self.assertIsNone(transfer_stack_activate_mode("print_lab"))
+        self.assertEqual(print_lab_activate_mode("safe"), "print_lab")
+        self.assertIsNone(print_lab_activate_mode("entertainment"))
+        self.assertIsNone(print_lab_activate_mode("torrent_fortress"))
+        self.assertIsNone(print_lab_activate_mode("print_lab"))
         from manager.runtime.app_proxy import (
             iter_set_cookie_headers,
             proxied_response_headers,
@@ -657,15 +673,24 @@ class MediaStackTests(unittest.TestCase):
         from manager.web import console as web_console
         from manager.runtime.media_stack import (
             MEDIA_STACK_APPS,
+            MODES_KEEP_MEDIA,
             TRANSFER_PROXY_APP_IDS,
             media_app_ids,
             media_launch_target,
+            media_stack_activate_mode,
+            print_lab_activate_mode,
         )
 
         self.assertIs(web_console.MEDIA_STACK_APPS, MEDIA_STACK_APPS)
         self.assertIs(web_console.media_app_ids, media_app_ids)
         self.assertIs(web_console.media_launch_target, media_launch_target)
         self.assertIs(web_console.TRANSFER_PROXY_APP_IDS, TRANSFER_PROXY_APP_IDS)
+        self.assertIs(web_console.media_stack_activate_mode, media_stack_activate_mode)
+        self.assertIs(web_console.print_lab_activate_mode, print_lab_activate_mode)
+        self.assertEqual(
+            MODES_KEEP_MEDIA,
+            frozenset({"entertainment", "torrent_fortress", "print_lab"}),
+        )
         self.assertIn("jellyfin", web_console.MEDIA_STACK_APPS)
         self.assertIn("torrentz", web_console.TRANSFER_PROXY_APP_IDS)
 

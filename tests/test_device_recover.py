@@ -192,6 +192,17 @@ class DeviceRecoverTests(unittest.TestCase):
         self.assertNotIn("starting %s", safe_fn)
         self.assertNotIn("rocky-pihole", safe_fn)
         self.assertIn("Do not start Pi-hole or Gluetun", safe_fn)
+        fortress_fn = daemon.split("elif effective_mode_id == 'torrent_fortress':", 1)[1].split(
+            "elif effective_mode_id == 'entertainment':", 1
+        )[0]
+        self.assertNotIn("ensure_media(False)", fortress_fn)
+        self.assertIn("Additive with entertainment", fortress_fn)
+        print_lab_fn = daemon.split("elif effective_mode_id == 'print_lab':", 1)[1].split(
+            "else:", 1
+        )[0]
+        self.assertNotIn("ensure_media(False)", print_lab_fn)
+        self.assertNotIn("stopping %s", print_lab_fn)
+        self.assertIn("Additive with entertainment and fortress", print_lab_fn)
 
     def test_recover_all_does_not_docker_stop_after_restart(self) -> None:
         source = (ROOT / "scripts" / "device_recover.py").read_text(encoding="utf-8")

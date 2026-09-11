@@ -30,9 +30,12 @@ from manager.runtime.device_quiesce import (
 )
 from manager.runtime.launch_requests import catalog_proxy_url, catalog_start_units, consume_launch_request
 from manager.runtime.media_stack import (
+    ADDITIVE_STACK_MODES,
     MEDIA_STACK_APPS,
     MEDIA_STACK_COMPOSE,
     MEDIA_STACK_ROOT,
+    MODES_KEEP_MEDIA,
+    TRANSFER_MODES_KEEP_QBITTORRENT,
     TRANSFER_PROXY_APP_IDS,
     jellyseerr_needs_volume_recreate,
     media_compose_up_command,
@@ -161,7 +164,7 @@ DEFAULT_MODE_CATALOG = {
         {
             "mode_id": "torrent_fortress",
             "label": "Torrent Fortress",
-            "description": "Strongest torrent/privacy posture with Proton-enforced transfer path.",
+            "description": "Proton-enforced qBittorrent. Additive with entertainment apps; does not stop Jellyfin.",
             "category": "privacy",
             "network": {
                 "profile": "wireguard_admin",
@@ -448,7 +451,7 @@ DEFAULT_MODE_CATALOG = {
         {
             "mode_id": "print_lab",
             "label": "Print Lab",
-            "description": "3D printer and Klipper workflow mode with transfer services disabled.",
+            "description": "Klipper/Mainsail. Additive with entertainment and Torrent Fortress; does not stop Jellyfin or qBittorrent.",
             "category": "utility",
             "network": {
                 "profile": "lan_only",
@@ -819,7 +822,19 @@ class ManagerDaemon:
             self._shed_overload_workloads(reason=f"reconcile:{effective_mode_id}")
             return
 
-        if effective_mode_id in {'entertainment', 'torrent_fortress'}:
+        def mode_still(expected: str) -> bool:
+            latest = str(self._load_current_mode_request().get("selected_mode_id") or "").strip()
+            if latest != expected:
+                self.log.info(
+                    "Aborting %s reconcile; mode is now %s",
+                    expected,
+                    latest or "unset",
+                )
+                self._last_mode_signature = None
+                return False
+            return True
+
+        if effective_mode_id in ADDITIVE_STACK_MODES:
             stop_radio_workloads()
 
         def ensure_media(running: bool) -> None:
@@ -849,18 +864,23 @@ class ManagerDaemon:
             ensure_media(False)
 
         elif effective_mode_id == 'torrent_fortress':
-            # Start gluetun first, wait for healthy, then start qBittorrent
+            # Additive with entertainment: start VPN/qBittorrent only. Never
+            # docker-stop Jellyfin/Jellyseerr just because fortress is selected.
             gluetun_health = self._docker_container_health(GLUETUN)
             if gluetun_health == 'stopped':
                 self.log.info('torrent_fortress: starting %s', GLUETUN)
                 self._docker_ensure(GLUETUN, running=True)
                 for _ in range(15):
                     _time.sleep(2)
+                    if not mode_still('torrent_fortress'):
+                        return
                     gluetun_health = self._docker_container_health(GLUETUN)
                     if gluetun_health in ('healthy', 'running'):
                         break
                 self.log.info('torrent_fortress: %s health=%s', GLUETUN, gluetun_health)
 
+            if not mode_still('torrent_fortress'):
+                return
             if gluetun_health in ('healthy', 'running'):
                 qbt_health = self._docker_container_health(QBT)
                 if qbt_health == 'stopped':
@@ -871,20 +891,28 @@ class ManagerDaemon:
                     'torrent_fortress: skipping %s start - gluetun not healthy (%s)',
                     QBT, gluetun_health,
                 )
-            ensure_media(False)
 
         elif effective_mode_id == 'entertainment':
+            # Additive with fortress: start media first, then VPN/qBittorrent.
+            # Do not stop qBittorrent if Gluetun is briefly unhealthy.
+            ensure_media(True)
+            if not mode_still('entertainment'):
+                return
             gluetun_health = self._docker_container_health(GLUETUN)
             if gluetun_health == 'stopped':
                 self.log.info('entertainment: starting %s', GLUETUN)
                 self._docker_ensure(GLUETUN, running=True)
                 for _ in range(15):
                     _time.sleep(2)
+                    if not mode_still('entertainment'):
+                        return
                     gluetun_health = self._docker_container_health(GLUETUN)
                     if gluetun_health in ('healthy', 'running'):
                         break
                 self.log.info('entertainment: %s health=%s', GLUETUN, gluetun_health)
 
+            if not mode_still('entertainment'):
+                return
             if gluetun_health in ('healthy', 'running'):
                 qbt_health = self._docker_container_health(QBT)
                 if qbt_health == 'stopped':
@@ -892,15 +920,9 @@ class ManagerDaemon:
                     self._docker_ensure(QBT, running=True)
             else:
                 self.log.warning(
-                    'entertainment: keeping %s stopped - gluetun not healthy (%s)',
+                    'entertainment: leaving %s as-is - gluetun not healthy (%s)',
                     QBT, gluetun_health,
                 )
-                qbt_health = self._docker_container_health(QBT)
-                if qbt_health != 'stopped':
-                    self.log.info('entertainment: stopping %s', QBT)
-                    self._docker_ensure(QBT, running=False)
-
-            ensure_media(True)
 
         elif effective_mode_id in ('pihole_only', 'daily_driver'):
             qbt_health = self._docker_container_health(QBT)
@@ -914,20 +936,13 @@ class ManagerDaemon:
             ensure_media(False)
 
         elif effective_mode_id == 'print_lab':
-            qbt_health = self._docker_container_health(QBT)
-            if qbt_health != 'stopped':
-                self.log.info('print_lab: stopping %s', QBT)
-                self._docker_ensure(QBT, running=False)
-            gluetun_health = self._docker_container_health(GLUETUN)
-            if gluetun_health != 'stopped':
-                self.log.info('print_lab: stopping %s', GLUETUN)
-                self._docker_ensure(GLUETUN, running=False)
+            # Additive with entertainment and fortress: start Klipper/Mainsail
+            # only. Never stop Jellyfin or qBittorrent to free the printer.
             for svc in ('klipper', 'moonraker', 'nginx'):
                 r = __import__('subprocess').run(['systemctl', 'is-active', svc], capture_output=True, text=True)
                 if r.stdout.strip() != 'active':
                     self.log.info('print_lab: starting %s', svc)
                     __import__('subprocess').run(['systemctl', 'start', svc], check=False)
-            ensure_media(False)
         else:
             self.log.debug('_reconcile_mode_actions: no action for mode %s', effective_mode_id)
 
@@ -1527,6 +1542,19 @@ class ManagerDaemon:
     ) -> None:
         target_mode = str(service.get("activate_mode") or "").strip()
         if not target_mode:
+            return
+
+        current_mode = str(self._load_current_mode_request().get("selected_mode_id") or "").strip()
+        if target_mode in ADDITIVE_STACK_MODES and current_mode in ADDITIVE_STACK_MODES:
+            self.log.info(
+                "Keeping %s; %s is additive with %s",
+                current_mode or "unset",
+                str(service.get("id") or "service"),
+                target_mode,
+            )
+            units = catalog_start_units(service)
+            if units:
+                self._run_systemctl("start", units)
             return
 
         if self._request_mode_change(
@@ -3489,7 +3517,7 @@ class ManagerDaemon:
         self._prepare_exclusive_workload("transfer-stack")
         request = self._load_current_mode_request()
         mode_id = str(request.get("selected_mode_id") or "").strip()
-        if mode_id not in {"torrent_fortress", "entertainment"}:
+        if mode_id not in TRANSFER_MODES_KEEP_QBITTORRENT:
             write_selected_mode(
                 "torrent_fortress",
                 reason=f"launcher_open:{app_id}",
@@ -3499,6 +3527,10 @@ class ManagerDaemon:
             mode_id = "torrent_fortress"
         self._last_mode_signature = None
         self._reconcile_mode_actions(mode_id)
+        if mode_id == "print_lab":
+            # Stay on Print Lab; still bring qBittorrent up beside Klipper.
+            self._docker_ensure("rocky-transfer-gluetun", running=True)
+            self._docker_ensure("rocky-transfer-qbittorrent", running=True)
         if app_id != "torrentz":
             return
         service = self._service_configuration("torrentz")
@@ -3527,6 +3559,29 @@ class ManagerDaemon:
                     )
                     return
                 self._start_transfer_stack_from_console(app_id)
+            except Exception:
+                self.log.exception("Console launch of %s failed", app_id)
+            return
+        if app_id in MEDIA_STACK_APPS:
+            self.log.info(
+                "Console requested launch of %s (source=%s)",
+                app_id,
+                request.get("source") or "console",
+            )
+            try:
+                self._prepare_exclusive_workload(app_id)
+                current = self._load_current_mode_request()
+                current_mode = str(current.get("selected_mode_id") or "").strip()
+                if current_mode not in MODES_KEEP_MEDIA:
+                    write_selected_mode(
+                        "entertainment",
+                        reason=f"launcher_open:{app_id}",
+                        requested_by="console",
+                        previous=current if isinstance(current, dict) else None,
+                    )
+                    self._last_mode_signature = None
+                spec = MEDIA_STACK_APPS[app_id]
+                self._start_media_container(str(spec["container"]), str(spec["compose_service"]))
             except Exception:
                 self.log.exception("Console launch of %s failed", app_id)
             return
@@ -3567,7 +3622,7 @@ class ManagerDaemon:
         self._last_exclusion_at = now
         request = self._load_current_mode_request()
         mode_id = str(request.get("selected_mode_id") or "").strip()
-        if mode_id in {"entertainment", "torrent_fortress"}:
+        if mode_id in ADDITIVE_STACK_MODES:
             stop_radio_workloads()
 
     def _start_mode_reconcile_thread(self) -> None:

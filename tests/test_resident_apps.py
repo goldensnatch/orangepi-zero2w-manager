@@ -153,6 +153,32 @@ class ResidentAppTests(unittest.TestCase):
         daemon = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")
         self.assertIn("_start_transfer_stack_from_console", daemon)
         self.assertIn("write_selected_mode", daemon)
+        self.assertIn("Aborting %s reconcile", daemon)
+        apply_fn = daemon.split("def _apply_console_launch_request", 1)[1].split("def _start_mode_reconcile_thread", 1)[0]
+        self.assertIn("MEDIA_STACK_APPS", apply_fn)
+        self.assertIn("_start_media_container", apply_fn)
+        self.assertIn("MODES_KEEP_MEDIA", apply_fn)
+        self.assertIn("TRANSFER_MODES_KEEP_QBITTORRENT", daemon)
+        fortress_fn = daemon.split("elif effective_mode_id == 'torrent_fortress':", 1)[1].split(
+            "elif effective_mode_id == 'entertainment':", 1
+        )[0]
+        self.assertNotIn("ensure_media(False)", fortress_fn)
+        self.assertNotIn("ensure_media(True)", fortress_fn)
+        self.assertIn("Additive with entertainment", fortress_fn)
+        entertainment_fn = daemon.split("elif effective_mode_id == 'entertainment':", 1)[1].split(
+            "elif effective_mode_id in ('pihole_only', 'daily_driver'):", 1
+        )[0]
+        self.assertIn("ensure_media(True)", entertainment_fn)
+        self.assertNotIn("ensure_media(False)", entertainment_fn)
+        self.assertNotIn("entertainment: stopping %s", entertainment_fn)
+        print_lab_fn = daemon.split("elif effective_mode_id == 'print_lab':", 1)[1].split(
+            "else:", 1
+        )[0]
+        self.assertNotIn("ensure_media(False)", print_lab_fn)
+        self.assertNotIn("print_lab: stopping %s", print_lab_fn)
+        self.assertIn("Additive with entertainment and fortress", print_lab_fn)
+        self.assertIn("ADDITIVE_STACK_MODES", daemon)
+        self.assertIn("Keeping %s; %s is additive with %s", daemon)
         self.assertIn("desired_mode_signature(request)", daemon)
         self.assertIn("_lightweight_mode_footer_text", daemon)
         self.assertIn("self._enforce_mode_exclusions()", daemon)
