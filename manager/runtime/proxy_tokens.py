@@ -9,6 +9,8 @@ import secrets
 import time
 from pathlib import Path
 
+from manager.runtime.media_stack import TRANSFER_PROXY_APP_IDS
+
 
 PROXY_TOKEN_SECRET_PATH = Path("/opt/zero2w-manager/runtime/config/proxy-token-secret")
 FALLBACK_SECRET = "rocky-fallback-secret"
@@ -45,6 +47,14 @@ def build_proxy_token(app_id: str, *, ttl_seconds: int | None = None) -> str:
     return f"{payload_b64}.{signature_b64}"
 
 
+def _token_app_matches(token_app: str, app_id: str) -> bool:
+    token_app = str(token_app or "")
+    app_id = str(app_id or "")
+    if token_app == app_id:
+        return True
+    return token_app in TRANSFER_PROXY_APP_IDS and app_id in TRANSFER_PROXY_APP_IDS
+
+
 def validate_proxy_token(token: str, app_id: str) -> bool:
     try:
         payload_b64, signature_b64 = token.split(".", 1)
@@ -66,7 +76,7 @@ def validate_proxy_token(token: str, app_id: str) -> bool:
     except Exception:
         return False
 
-    if str(payload.get("app")) != app_id:
+    if not _token_app_matches(str(payload.get("app")), app_id):
         return False
     try:
         expires_at = int(payload.get("exp", 0))

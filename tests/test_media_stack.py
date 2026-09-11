@@ -64,6 +64,9 @@ class MediaStackTests(unittest.TestCase):
             self.assertTrue(proxy_tokens.validate_proxy_token(token, "prowlarr"))
             self.assertFalse(proxy_tokens.validate_proxy_token(token, "radarr"))
             self.assertFalse(proxy_tokens.validate_proxy_token("not-a-token", "prowlarr"))
+            torrent_token = proxy_tokens.build_proxy_token("torrentz", ttl_seconds=120)
+            self.assertTrue(proxy_tokens.validate_proxy_token(torrent_token, "transfer-stack"))
+            self.assertTrue(proxy_tokens.validate_proxy_token(torrent_token, "torrentz"))
         finally:
             if previous is None:
                 os.environ.pop("ROCKY_WEB_PROXY_TOKEN_SECRET", None)
@@ -148,6 +151,13 @@ class MediaStackTests(unittest.TestCase):
             "application/json",
         )
         self.assertEqual(json_payload, b'{"save_path":"/data/downloads","apiRoot":"/api/v1"}')
+        torrent_html = rewrite_html_root_paths(
+            b'<html><head></head><script>fetch("/api/v2/auth/login")</script></html>',
+            "transfer-stack",
+            "text/html",
+        )
+        self.assertIn(b'fetch("/api/v2/auth/login")', torrent_html)
+        self.assertIn(b"/proxy/transfer-stack/__rocky_bridge.js", torrent_html)
         from manager.runtime.app_proxy import (
             rewrite_arr_initialize_json,
             suppress_login_redirect_for_asset,
@@ -357,14 +367,21 @@ class MediaStackTests(unittest.TestCase):
             ),
             "/proxy/prowlarr/login?returnUrl=%2F",
         )
-        self.assertEqual(
+        self.assertIsNone(
             proxied_app_login_location(
                 next_path="",
                 referer="",
                 request_query="",
                 last_app_id="jellyfin",
-            ),
-            "/proxy/jellyfin/",
+            )
+        )
+        self.assertIsNone(
+            proxied_app_login_location(
+                next_path="/",
+                referer="",
+                request_query="",
+                last_app_id="torrentz",
+            )
         )
         self.assertIsNone(
             proxied_app_login_location(
@@ -373,6 +390,15 @@ class MediaStackTests(unittest.TestCase):
                 request_query="",
                 last_app_id="jellyfin",
             )
+        )
+        self.assertEqual(
+            proxied_app_login_location(
+                next_path="",
+                referer="http://192.168.1.216:8090/proxy/jellyfin/web/",
+                request_query="",
+                last_app_id="torrentz",
+            ),
+            "/proxy/jellyfin/",
         )
         self.assertEqual(
             filter_browser_cookies_for_upstream(
@@ -407,6 +433,20 @@ class MediaStackTests(unittest.TestCase):
         self.assertNotIn("Cookie", forwarded)
         self.assertNotIn("X-Forwarded-Prefix", forwarded)
         self.assertNotIn("Accept-Encoding", forwarded)
+        torrent_headers = dict(
+            select_upstream_request_headers(
+                {
+                    "Origin": "http://192.168.1.213:8090",
+                    "Referer": "http://192.168.1.213:8090/proxy/transfer-stack/",
+                    "X-Api-Key": "unused",
+                    "Accept": "application/json",
+                },
+                app_id="transfer-stack",
+            )
+        )
+        self.assertNotIn("Origin", torrent_headers)
+        self.assertNotIn("Referer", torrent_headers)
+        self.assertEqual(torrent_headers["Accept"], "application/json")
         gzipped = __import__("gzip").compress(b"<html><head></head></html>")
         from manager.runtime.app_proxy import decode_upstream_payload
 
@@ -524,8 +564,12 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("_launch_transfer_stack", source)
         self.assertIn("send_console_failure", source)
         self.assertNotIn('if eid != "transfer-stack" else ""', source)
+        self.assertNotIn('next_path == "/apps" and last_app', source)
+        self.assertIn("is_transfer_proxy_app(app_id)", proxy_fn)
+        self.assertIn("keep_auth_challenge", proxy_fn)
+        self.assertIn("handle_login_page", proxy_fn)
         self.assertIn(
-            'if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi", "transfer-stack", "torrentz"}',
+            'if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"} | TRANSFER_PROXY_APP_IDS',
             proxy_fn,
         )
         self.assertIn('Accept-Encoding", "identity"', proxy_fn)

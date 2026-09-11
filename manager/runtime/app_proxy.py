@@ -365,7 +365,9 @@ def proxied_app_login_location(
     candidate = str(next_path or "").strip()
     if candidate.startswith("/proxy/"):
         return candidate
-    if candidate == "/apps":
+    # Visiting /apps, /, or /login must show Rocky login. A leftover
+    # rocky_last_proxy_app cookie must not bounce the console into Torrentz.
+    if candidate and is_rocky_console_request(candidate):
         return None
     referer_app = proxy_app_id_from_path(urlparse(referer or "").path)
     pairs = [
@@ -377,7 +379,7 @@ def proxied_app_login_location(
     app_id = referer_app or str(last_app_id or "").strip()
     if not app_id or not is_public_proxy_app(app_id):
         return None
-    if not referer_app and not looks_like_app_login and not last_app_id:
+    if not referer_app and not looks_like_app_login:
         return None
     asset = static_asset_from_login_query(request_query)
     if asset:
@@ -403,8 +405,9 @@ def filter_browser_cookies_for_upstream(cookie_header: str) -> str:
     return "; ".join(kept)
 
 
-def select_upstream_request_headers(headers) -> list[tuple[str, str]]:
+def select_upstream_request_headers(headers, *, app_id: str = "") -> list[tuple[str, str]]:
     """Copy browser headers *arr/Jellyfin need (X-Api-Key, Authorization, …)."""
+    skip_origin = str(app_id or "") in TRANSFER_PROXY_APP_IDS
     forwarded: list[tuple[str, str]] = []
     items = headers.items() if hasattr(headers, "items") else []
     for name, value in items:
@@ -412,6 +415,8 @@ def select_upstream_request_headers(headers) -> list[tuple[str, str]]:
         if not value or lower in _SKIP_UPSTREAM_REQUEST_HEADERS:
             continue
         if lower.startswith("x-forwarded-"):
+            continue
+        if skip_origin and lower in {"origin", "referer"}:
             continue
         forwarded.append((str(name), str(value)))
     return forwarded
@@ -731,11 +736,11 @@ def rewrite_html_root_paths(payload: bytes, app_id: str, content_type: str) -> b
     text = _ROOT_ATTR_RE.sub(rf"\g<attr>{prefix}/\g<path>", text)
     text = _URL_FUNC_RE.sub(rf"url({prefix}/", text)
     text = _CSP_META_RE.sub("", text)
-    if app_id != "jellyseerr":
+    if app_id not in {"jellyseerr"} | TRANSFER_PROXY_APP_IDS:
         text = _QUOTED_ROOT_RE.sub(rf"\g<quote>{prefix}/\g<path>\g<quote>", text)
         text = _ARR_URLBASE_RE.sub(rf'\1\2{prefix}\2', text)
         text = text.replace("__URL_BASE__", prefix)
-    else:
+    elif app_id == "jellyseerr":
         text = rewrite_jellyseerr_next_data(text)
     text = re.sub(r"(?is)<base\b[^>]*>", "", text)
     text = inject_proxy_bridge(text, app_id)
@@ -747,12 +752,15 @@ def rewrite_upstream_headers(
     app_id: str,
     upstream_base: str,
     public_hosts: set[str] | None = None,
+    *,
+    keep_auth_challenge: bool = False,
 ) -> dict[str, str]:
     rewritten: dict[str, str] = {}
     for name, value in headers.items():
         lower = name.lower()
         if lower in HOP_BY_HOP_HEADERS or lower in _CSP_HEADERS:
-            continue
+            if not (keep_auth_challenge and lower == "www-authenticate"):
+                continue
         if lower == "location":
             rewritten[name] = rewrite_upstream_location(
                 value,

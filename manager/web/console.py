@@ -2000,9 +2000,6 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             self._send_redirect(passthrough)
             return
         next_path = _safe_next_path(str(next_path) or "/apps")
-        last_app = self._cookie(LAST_PROXY_APP_COOKIE) or ""
-        if next_path == "/apps" and last_app and is_public_proxy_app(last_app):
-            next_path = f"/proxy/{last_app}/"
         error_html = (
             f'<p class="card-status-text stopped">{html.escape(error)}</p>'
             if error
@@ -2038,7 +2035,6 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         password = str((form.get("password") or [""])[0])
         next_path = _safe_next_path(str((form.get("next") or [""])[0]))
         csrf = str((form.get("csrf") or [""])[0])
-        last_app = self._cookie(LAST_PROXY_APP_COOKIE) or ""
         if csrf != CSRF_TOKEN:
             self.handle_login_page(error="Login form expired. Refresh and try again.", next_path=next_path or "/apps")
             return
@@ -2048,9 +2044,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 next_path=next_path or "/apps",
             )
             return
-        if next_path in {"", "/apps"} and last_app and is_public_proxy_app(last_app):
-            next_path = f"/proxy/{last_app}/"
-        elif not next_path:
+        if not next_path:
             next_path = "/apps"
         self.send_response(HTTPStatus.FOUND)
         self.send_header("Location", next_path)
@@ -3711,6 +3705,9 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         app_id, _, remainder = proxy_path.partition("/")
         token_ok = self.token_authorized_proxy(request, app_id)
         if not is_public_proxy_app(app_id) and not (self.authenticated() or token_ok):
+            if self._wants_html():
+                self.handle_login_page(next_path="/apps")
+                return
             payload = b"Authentication required.\n"
             self.send_response(HTTPStatus.UNAUTHORIZED)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -3777,16 +3774,17 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         upstream = urlparse(base)
         host_override = upstream.netloc
         proxy_request = Request(target, data=body, method=method)
-        for header_name, header_value in select_upstream_request_headers(self.headers):
+        for header_name, header_value in select_upstream_request_headers(self.headers, app_id=app_id):
             proxy_request.add_header(header_name, header_value)
         cookie_header = filter_browser_cookies_for_upstream(self.headers.get("Cookie", ""))
         if cookie_header:
             proxy_request.add_header("Cookie", cookie_header)
         proxy_request.add_header("Host", host_override)
         proxy_request.add_header("Accept-Encoding", "identity")
-        proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
-        proxy_request.add_header("X-Forwarded-Proto", "http")
-        if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi", "transfer-stack", "torrentz"}:
+        if not is_transfer_proxy_app(app_id):
+            proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
+            proxy_request.add_header("X-Forwarded-Proto", "http")
+        if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"} | TRANSFER_PROXY_APP_IDS:
             proxy_request.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
         proxy_timeout = 60 if app_id == "jellyseerr" and method in {"POST", "PUT", "PATCH"} else 20
         deadline = time.time() + 1.8
@@ -3800,6 +3798,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                         app_id,
                         base,
                         public_hosts=public_hosts,
+                        keep_auth_challenge=is_transfer_proxy_app(app_id),
                     )
                     payload, headers = self._rewrite_proxied_payload(
                         payload, headers, app_id, target_path
@@ -3819,6 +3818,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     app_id,
                     base,
                     public_hosts=public_hosts,
+                    keep_auth_challenge=is_transfer_proxy_app(app_id),
                 )
                 location = str(headers.get("Location") or headers.get("location") or "")
                 if suppress_login_redirect_for_asset(target_path, location):
