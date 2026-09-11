@@ -156,6 +156,8 @@ class DeviceRecoverTests(unittest.TestCase):
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         apps_fn = source.split("def apps_payload", 1)[1].split("def proxy_response", 1)[0]
         self.assertIn("published_console_state()", apps_fn)
+        self.assertIn("MEDIA_STACK_APPS.items()", apps_fn)
+        self.assertIn("from manager.runtime.media_stack import", source)
         self.assertNotIn("runtime_status_payload(detail=\"full\")", apps_fn)
         self.assertNotIn("docker inspect", apps_fn)
         self.assertNotIn("service_reported_version", apps_fn)

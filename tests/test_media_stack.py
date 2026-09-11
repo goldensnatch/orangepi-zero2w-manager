@@ -529,6 +529,15 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn(b"Starting Jellyseerr", wait_html)
         self.assertIn(b'meta http-equiv="refresh" content="2"', wait_html)
 
+    def test_console_imports_media_stack_symbols(self) -> None:
+        from manager.web import console as web_console
+        from manager.runtime.media_stack import MEDIA_STACK_APPS, media_app_ids, media_launch_target
+
+        self.assertIs(web_console.MEDIA_STACK_APPS, MEDIA_STACK_APPS)
+        self.assertIs(web_console.media_app_ids, media_app_ids)
+        self.assertIs(web_console.media_launch_target, media_launch_target)
+        self.assertIn("jellyfin", web_console.MEDIA_STACK_APPS)
+
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         self.assertIn('target="_blank" rel="noopener"', source)

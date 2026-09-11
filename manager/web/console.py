@@ -72,6 +72,13 @@ from manager.runtime.app_proxy import (
 )
 from manager.runtime.service_catalog import ServiceCatalog
 from manager.runtime.launch_requests import catalog_proxy_url, needs_daemon_launch, write_launch_request
+from manager.runtime.media_stack import (
+    MEDIA_STACK_APPS,
+    jellyseerr_needs_volume_recreate,
+    media_app_ids,
+    media_compose_up_command,
+    media_launch_target,
+)
 from manager.runtime.proxy_tokens import (
     build_proxy_token as mint_proxy_token,
     validate_proxy_token as check_proxy_token,
