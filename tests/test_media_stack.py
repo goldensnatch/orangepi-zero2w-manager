@@ -270,6 +270,44 @@ class MediaStackTests(unittest.TestCase):
         )
         self.assertEqual(relogin["username"], "admin")
         self.assertNotIn("hostname", relogin)
+        from manager.runtime.media_stack import media_connect_hostname
+
+        radarr_host = media_connect_hostname("radarr")
+        radarr_test = json.loads(
+            rewrite_jellyseerr_jellyfin_connect_body(
+                b'{"hostname":"127.0.0.1","port":7878,"apiKey":"radarr-key","useSsl":true,"baseUrl":"/proxy/radarr"}',
+                public_hosts={"192.168.1.213"},
+                path="/api/v1/settings/radarr/test",
+            )
+        )
+        self.assertEqual(radarr_test["hostname"], radarr_host)
+        self.assertEqual(radarr_test["port"], 7878)
+        self.assertEqual(radarr_test["apiKey"], "radarr-key")
+        self.assertEqual(radarr_test["baseUrl"], "")
+        self.assertFalse(radarr_test["useSsl"])
+        sonarr_host = media_connect_hostname("sonarr")
+        sonarr_test = json.loads(
+            rewrite_jellyseerr_jellyfin_connect_body(
+                b'{"hostname":"192.168.1.213","port":8989,"apiKey":"sonarr-key"}',
+                public_hosts={"192.168.1.213"},
+            )
+        )
+        self.assertEqual(sonarr_test["hostname"], sonarr_host)
+        self.assertEqual(sonarr_test["port"], 8989)
+        proxied_radarr = json.loads(
+            rewrite_jellyseerr_jellyfin_connect_body(
+                b'{"hostname":"192.168.1.213","port":8090,"apiKey":"x","baseUrl":"/proxy/radarr"}',
+                public_hosts={"192.168.1.213"},
+                path="/api/v1/settings/radarr/test",
+            )
+        )
+        self.assertEqual(proxied_radarr["hostname"], radarr_host)
+        self.assertEqual(proxied_radarr["port"], 7878)
+        untouched_unrelated = json.loads(
+            rewrite_jellyseerr_jellyfin_connect_body(b'{"title":"The Radarr Movie"}')
+        )
+        self.assertEqual(untouched_unrelated["title"], "The Radarr Movie")
+        self.assertNotIn("hostname", untouched_unrelated)
         next_html = rewrite_html_root_paths(
             b'<html><head></head><script id="__NEXT_DATA__" type="application/json">{"page":"/setup"}</script></html>',
             "jellyseerr",
@@ -282,6 +320,7 @@ class MediaStackTests(unittest.TestCase):
 
         bridge = proxy_bridge_js("jellyseerr")
         self.assertIn("fillHost", bridge)
+        self.assertIn("getElementById('apiKey')", bridge)
         self.assertIn("serviceWorker", bridge)
         self.assertIn("pushState", bridge)
 
@@ -466,6 +505,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("wants_upstream_wait_page", proxy_fn)
         self.assertIn("map_jellyfin_upstream_path", proxy_fn)
         self.assertIn("rewrite_jellyseerr_jellyfin_connect_body", proxy_fn)
+        self.assertIn("path=target_path", proxy_fn)
         self.assertIn("is_proxy_bridge_path", proxy_fn)
         self.assertIn("proxy_bridge_js", proxy_fn)
         self.assertIn("X-Rocky-Proxy-App", proxy_fn)
@@ -534,6 +574,8 @@ class MediaStackTests(unittest.TestCase):
             overlay_text = overlay.read_text(encoding="utf-8")
             self.assertIn("./jellyseerr-config:/app/config", overlay_text)
             self.assertRegex(overlay_text, r"jellyfin:\d+\.\d+\.\d+\.\d+")
+            self.assertRegex(overlay_text, r"radarr:\d+\.\d+\.\d+\.\d+")
+            self.assertRegex(overlay_text, r"sonarr:\d+\.\d+\.\d+\.\d+")
             self.assertNotIn("host-gateway", overlay_text)
             command = media_compose_up_command("jellyseerr", root, force_recreate=True)
             assert command is not None

@@ -3638,7 +3638,9 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0") or "0")
             body = self.rfile.read(length)
             if app_id == "jellyseerr" and body:
-                body = rewrite_jellyseerr_jellyfin_connect_body(body, public_hosts=public_hosts)
+                body = rewrite_jellyseerr_jellyfin_connect_body(
+                    body, public_hosts=public_hosts, path=target_path
+                )
         upstream = urlparse(base)
         host_override = upstream.netloc
         proxy_request = Request(target, data=body, method=method)

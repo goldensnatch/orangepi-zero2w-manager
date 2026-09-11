@@ -6,5 +6,9 @@ services:
     extra_hosts:
       - "host.docker.internal:172.17.0.1"
       - "jellyfin:172.17.0.1"
+      - "radarr:172.17.0.1"
+      - "sonarr:172.17.0.1"
+      - "prowlarr:172.17.0.1"
+      - "bazarr:172.17.0.1"
     volumes:
       - ./jellyseerr-config:/app/config

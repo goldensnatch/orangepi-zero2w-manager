@@ -169,8 +169,11 @@ def jellyseerr_overlay_text(*, include_config_volume: bool = True) -> str:
         "  jellyseerr:",
         "    extra_hosts:",
         f'      - "host.docker.internal:{gateway}"',
-        f'      - "jellyfin:{gateway}"',
     ]
+    for app_id, spec in MEDIA_STACK_APPS.items():
+        if app_id == "jellyseerr":
+            continue
+        lines.append(f'      - "{spec["compose_service"]}:{gateway}"')
     if include_config_volume:
         lines.extend(
             [
@@ -284,7 +287,7 @@ def container_has_jellyfin_host_alias(container: str) -> bool:
     if not isinstance(hosts, list):
         return False
     return any(
-        str(host).startswith("jellyfin:") or str(host).startswith("host.docker.internal:")
+        str(host).split(":", 1)[0] in {"jellyfin", "radarr", "sonarr", "prowlarr", "bazarr", "host.docker.internal"}
         for host in hosts
     )
 
@@ -311,9 +314,11 @@ def _docker_inspect(container: str) -> dict[str, Any] | None:
     return payload[0]
 
 
-def jellyfin_connect_hostname(container: str | None = None) -> str:
-    """IPv4 Jellyseerr should use; never a DNS name like host.docker.internal."""
-    spec = MEDIA_STACK_APPS["jellyfin"]
+def media_connect_hostname(app_id: str, container: str | None = None) -> str:
+    """IPv4 another media container should use; never a DNS name like host.docker.internal."""
+    spec = MEDIA_STACK_APPS.get(str(app_id or ""))
+    if spec is None:
+        return docker_bridge_gateway_ip()
     inspected = _docker_inspect(container or str(spec["container"]))
     if inspected:
         mode = str((inspected.get("HostConfig") or {}).get("NetworkMode") or "")
@@ -339,6 +344,10 @@ def jellyfin_connect_hostname(container: str | None = None) -> str:
                     if ip and _looks_like_ipv4(ip):
                         return ip
     return docker_bridge_gateway_ip()
+
+
+def jellyfin_connect_hostname(container: str | None = None) -> str:
+    return media_connect_hostname("jellyfin", container)
 
 
 def _container_created_timestamp(container: str) -> float | None:

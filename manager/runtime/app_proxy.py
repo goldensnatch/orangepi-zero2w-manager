@@ -6,7 +6,7 @@ import re
 import zlib
 from urllib.parse import parse_qsl, urlencode, urlparse
 
-from manager.runtime.media_stack import MEDIA_STACK_APPS, jellyfin_connect_hostname, media_app_ids
+from manager.runtime.media_stack import MEDIA_STACK_APPS, jellyfin_connect_hostname, media_app_ids, media_connect_hostname
 
 
 HOP_BY_HOP_HEADERS = {
@@ -301,10 +301,12 @@ def proxy_bridge_js(app_id: str) -> str:
         "var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');"
         "if(d&&d.set)d.set.call(el,val);else el.value=val;"
         "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}"
-        "function fillHost(){var h=document.getElementById('hostname');if(h){var cur=(h.value||'').trim().toLowerCase();"
+        "function fillHost(){if(document.getElementById('apiKey'))return;"
+        "var port=document.getElementById('port');var pv=(port&&port.value||'').trim();"
+        "if(pv==='7878'||pv==='8989'||pv==='9696'||pv==='6767')return;"
+        "var h=document.getElementById('hostname');if(h){var cur=(h.value||'').trim().toLowerCase();"
         "if(!cur||cur==='localhost'||cur==='127.0.0.1'||cur==='0.0.0.0'||cur==='jellyfin'||cur==='host.docker.internal'||cur.indexOf('proxy')>=0)setv(h,jfHost);}"
-        "var port=document.getElementById('port');if(port){var pv=(port.value||'').trim();"
-        "if(!pv||pv==='8090'||pv==='80')setv(port,'8096');}"
+        "if(port){if(!pv||pv==='8090'||pv==='80')setv(port,'8096');}"
         "var ub=document.getElementById('urlBase');if(ub&&/proxy/i.test(ub.value||''))setv(ub,'');}"
         "var n=0,t=setInterval(function(){fillHost();if(++n>48)clearInterval(t);},250);fillHost();}"
         "})(" + prefix + "," + base + "," + jf_host + ");"
@@ -503,11 +505,59 @@ def map_jellyfin_upstream_path(path: str) -> str:
     return normalized
 
 
+_ARR_APP_BY_PORT = {
+    7878: "radarr",
+    8989: "sonarr",
+    9696: "prowlarr",
+    6767: "bazarr",
+}
+_ARR_APP_IDS = ("radarr", "sonarr", "prowlarr", "bazarr")
+
+
+def _jellyseerr_media_target(data: dict, path: str = "") -> str | None:
+    lowered = str(path or "").lower()
+    for app_id in (*_ARR_APP_IDS, "jellyfin"):
+        if re.search(rf"(?:^|/){re.escape(app_id)}(?:/|$)", lowered):
+            return app_id
+    haystack = " ".join(
+        str(data.get(key) or "")
+        for key in ("hostname", "ip", "baseUrl", "urlBase")
+    ).lower()
+    for app_id in _ARR_APP_IDS:
+        if app_id in haystack or f"/proxy/{app_id}" in haystack:
+            return app_id
+    if "jellyfin" in haystack or "/proxy/jellyfin" in haystack:
+        return "jellyfin"
+    try:
+        port = int(data.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    if port in _ARR_APP_BY_PORT:
+        return _ARR_APP_BY_PORT[port]
+    return None
+
+
+def _pin_jellyseerr_upstream(data: dict, app_id: str) -> dict:
+    spec = MEDIA_STACK_APPS[app_id]
+    host = media_connect_hostname(app_id)
+    data["hostname"] = host
+    data["ip"] = host
+    data["port"] = int(spec["port"])
+    data["useSsl"] = False
+    data["urlBase"] = ""
+    if app_id != "jellyfin":
+        data["baseUrl"] = ""
+    else:
+        data["serverType"] = 2  # Jellyseerr MediaServerType.JELLYFIN
+    return data
+
+
 def rewrite_jellyseerr_jellyfin_connect_body(
     payload: bytes,
     public_hosts: set[str] | None = None,
+    path: str = "",
 ) -> bytes:
-    """Jellyseerr talks to Jellyfin from Docker; the browser URL cannot reach it."""
+    """Jellyseerr talks to Jellyfin/*arr from Docker; the browser URL cannot reach them."""
     del public_hosts
     try:
         data = json.loads(payload)
@@ -515,18 +565,18 @@ def rewrite_jellyseerr_jellyfin_connect_body(
         return payload
     if not isinstance(data, dict):
         return payload
-    if "username" not in data and "password" not in data and "email" not in data:
+    jellyfin_login = any(key in data for key in ("username", "password", "email"))
+    if jellyfin_login:
+        if not any(key in data for key in ("hostname", "port", "useSsl", "urlBase", "ip", "serverType")):
+            return payload
+        _pin_jellyseerr_upstream(data, "jellyfin")
+        return json.dumps(data).encode("utf-8")
+    target = _jellyseerr_media_target(data, path)
+    if target not in _ARR_APP_IDS:
         return payload
-    if not any(key in data for key in ("hostname", "port", "useSsl", "urlBase", "ip", "serverType")):
+    if "apiKey" not in data and "hostname" not in data and "port" not in data:
         return payload
-    jellyfin = MEDIA_STACK_APPS["jellyfin"]
-    host = jellyfin_connect_hostname()
-    data["hostname"] = host
-    data["ip"] = host
-    data["port"] = int(jellyfin["port"])
-    data["urlBase"] = ""
-    data["useSsl"] = False
-    data["serverType"] = 2  # Jellyseerr MediaServerType.JELLYFIN
+    _pin_jellyseerr_upstream(data, target)
     return json.dumps(data).encode("utf-8")
 
 
