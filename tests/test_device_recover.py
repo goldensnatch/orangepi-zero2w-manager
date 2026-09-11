@@ -130,6 +130,27 @@ class DeviceRecoverTests(unittest.TestCase):
         self.assertNotIn("from manager.", source)
         self.assertIn("fatal: not a git repository", source)
         self.assertIn("archive/refs/heads/", source)
+        self.assertIn('dest="flag_all"', source)
+
+    def test_recover_script_accepts_all_flag(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "device_recover_cli",
+            ROOT / "scripts" / "device_recover.py",
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        parser = module.build_parser()
+        self.assertEqual(module.resolve_action(parser.parse_args([])), "all")
+        self.assertEqual(module.resolve_action(parser.parse_args(["--all"])), "all")
+        self.assertEqual(module.resolve_action(parser.parse_args(["all"])), "all")
+        self.assertEqual(module.resolve_action(parser.parse_args(["--quiesce"])), "quiesce")
+        self.assertEqual(module.resolve_action(parser.parse_args(["update"])), "update")
+        self.assertEqual(module.resolve_action(parser.parse_args(["--update"])), "update")
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--not-a-real-flag"])
 
     def test_button_loop_does_not_docker_inspect_every_tick(self) -> None:
         daemon = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")

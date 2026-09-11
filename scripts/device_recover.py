@@ -9,7 +9,7 @@ Run as root on the device:
 
   curl -fsSL -o /tmp/device_recover.py \\
     https://raw.githubusercontent.com/goldensnatch/orangepi-zero2w-manager/cursor/entertainment-media-apps-e885/scripts/device_recover.py
-  sudo python3 /tmp/device_recover.py --all
+  sudo python3 /tmp/device_recover.py
 """
 
 from __future__ import annotations
@@ -269,6 +269,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep-print-lab", action="store_true")
     parser.add_argument("--keep-transfer", action="store_true")
     parser.add_argument(
+        "--all",
+        dest="flag_all",
+        action="store_true",
+        help="Stop leftover work, install this branch, and restart Rocky (default)",
+    )
+    parser.add_argument(
+        "--quiesce",
+        dest="flag_quiesce",
+        action="store_true",
+        help="Only stop leftover radio/media work and pin safe mode",
+    )
+    parser.add_argument(
+        "--update",
+        dest="flag_update",
+        action="store_true",
+        help="Only install this branch from GitHub",
+    )
+    parser.add_argument(
         "action",
         nargs="?",
         choices=("quiesce", "update", "all"),
@@ -278,14 +296,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_action(args: argparse.Namespace) -> str:
+    flags = [
+        name
+        for name, enabled in (
+            ("quiesce", bool(getattr(args, "flag_quiesce", False))),
+            ("update", bool(getattr(args, "flag_update", False))),
+            ("all", bool(getattr(args, "flag_all", False))),
+        )
+        if enabled
+    ]
+    if len(flags) > 1:
+        raise SystemExit("Specify only one of --quiesce, --update, or --all")
+    if flags:
+        return flags[0]
+    return str(args.action or "all")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if os.geteuid() != 0 and args.action in {"quiesce", "all"} and not os.environ.get("ROCKY_RECOVER_ALLOW_USER"):
+    action = resolve_action(args)
+    if os.geteuid() != 0 and action in {"quiesce", "all"} and not os.environ.get("ROCKY_RECOVER_ALLOW_USER"):
         print("Run as root so systemctl/docker stop can work.", file=sys.stderr)
         return 1
-    if args.action == "quiesce":
+    if action == "quiesce":
         return cmd_quiesce(args)
-    if args.action == "update":
+    if action == "update":
         return cmd_update(args)
     return cmd_all(args)
 
