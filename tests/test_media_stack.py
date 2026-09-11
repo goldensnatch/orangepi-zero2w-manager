@@ -805,6 +805,89 @@ class MediaStackTests(unittest.TestCase):
         self.assertNotIn("ensure_media(False)", print_lab)
         self.assertIn("ensure_media(False)", daemon_src.split("if effective_mode_id == 'safe':", 1)[1].split("elif", 1)[0])
 
+    def test_wait_page_only_for_documents_across_all_media_apps(self) -> None:
+        from manager.runtime.app_proxy import (
+            proxy_retry_seconds,
+            upstream_unavailable_api_payload,
+            upstream_unavailable_error_response,
+            wants_upstream_wait_page,
+        )
+
+        html_accept = "text/html,application/xhtml+xml"
+        json_accept = "application/json"
+        rest_paths = {
+            "jellyfin": (
+                "/System/Info/Public",
+                "/Users/Me",
+                "/Sessions",
+                "/Items/abc",
+                "/Library/MediaFolders",
+            ),
+            "jellyseerr": ("/api/v1/status", "/api/v1/auth/me", "/api/v1/settings/main"),
+            "prowlarr": ("/api/v1/system/status", "/api/v1/indexer", "/initialize.json"),
+            "radarr": ("/api/v1/system/status", "/api/v1/movie", "/initialize.json"),
+            "sonarr": ("/api/v1/system/status", "/api/v1/series", "/initialize.json"),
+            "bazarr": ("/api/system/status", "/api/movies", "/initialize.json"),
+        }
+        document_paths = {
+            "jellyfin": ("/web/", "/web/index.html"),
+            "jellyseerr": ("/", "/login"),
+            "prowlarr": ("/", "/login"),
+            "radarr": ("/", "/login"),
+            "sonarr": ("/", "/login"),
+            "bazarr": ("/", "/login"),
+        }
+        self.assertEqual(set(rest_paths), set(MEDIA_STACK_APPS))
+        self.assertEqual(set(document_paths), set(MEDIA_STACK_APPS))
+        for app_id in MEDIA_STACK_APPS:
+            for path in rest_paths[app_id]:
+                self.assertFalse(
+                    wants_upstream_wait_page("GET", path, json_accept, app_id),
+                    f"{app_id} {path} must not get an HTML wait page",
+                )
+                self.assertFalse(
+                    wants_upstream_wait_page("GET", path, html_accept, app_id),
+                    f"{app_id} {path} HTML accept still must not wait-page REST",
+                )
+            for path in document_paths[app_id]:
+                self.assertTrue(
+                    wants_upstream_wait_page("GET", path, html_accept, app_id),
+                    f"{app_id} {path} should show the starting page",
+                )
+            payload = upstream_unavailable_api_payload(app_id)
+            self.assertNotIn(b"<html", payload)
+            self.assertNotIn(b"<!DOCTYPE", payload)
+            parsed = json.loads(payload)
+            self.assertEqual(parsed["error"], "upstream_unavailable")
+            self.assertEqual(parsed["app"], app_id)
+            css_body, css_headers = upstream_unavailable_error_response(
+                app_id, "/static/app.css"
+            )
+            self.assertIn("text/plain", css_headers["Content-Type"])
+            self.assertNotIn(b"<html", css_body)
+            json_body, json_headers = upstream_unavailable_error_response(
+                app_id, rest_paths[app_id][0]
+            )
+            self.assertIn("application/json", json_headers["Content-Type"])
+            self.assertEqual(json.loads(json_body)["error"], "upstream_unavailable")
+            self.assertEqual(proxy_retry_seconds(app_id, "/static/app.js"), 1.8)
+            self.assertEqual(proxy_retry_seconds(app_id, "/web/main.css"), 1.8)
+        self.assertGreater(
+            proxy_retry_seconds("jellyfin", "/System/Info/Public"),
+            proxy_retry_seconds("jellyfin", "/web/main.css"),
+        )
+        for app_id in ("jellyseerr", "prowlarr", "radarr", "sonarr"):
+            self.assertGreater(
+                proxy_retry_seconds(app_id, "/api/v1/system/status"),
+                proxy_retry_seconds(app_id, "/Content/styles.css"),
+            )
+        source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
+        proxy_fn = source.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
+        self.assertIn("_ensure_media_app_starting", proxy_fn)
+        ensure_at, _, retry_loop = proxy_fn.partition("deadline = time.time() + retry_seconds")
+        self.assertIn("_ensure_media_app_starting", ensure_at)
+        self.assertNotIn("_ensure_media_app_starting", retry_loop)
+
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         self.assertIn('target="_blank" rel="noopener"', source)
