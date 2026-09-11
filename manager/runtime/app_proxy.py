@@ -61,6 +61,18 @@ _STATIC_ASSET_RE = re.compile(
     r"(?i)(?:^|/)[^/?]+\.(?:js|css|map|woff2?|ttf|png|jpe?g|gif|svg|ico)(?:\?|$)"
 )
 _ARR_URLBASE_RE = re.compile(r"""(urlBase\s*:\s*)(['"])(?:__URL_BASE__|/)?([^'"]*)\2""")
+_JELLYSEERR_LEAK_PREFIXES = (
+    "/api/v1/auth",
+    "/api/v1/settings",
+    "/api/v1/request",
+    "/api/v1/user",
+    "/api/v1/status",
+    "/api/v1/discover",
+    "/api/v1/issue",
+    "/api/v1/override",
+    "/_next/",
+)
+_ROOT_COOKIE_APPS = frozenset({"jellyseerr"})
 
 
 def public_proxy_app_ids() -> frozenset[str]:
@@ -108,10 +120,29 @@ def leaked_proxy_app_id(
     """Map a root-relative app request (e.g. /initialize.json) back to /proxy/<app>/."""
     if str(path or "").startswith("/proxy/") or is_rocky_console_request(path):
         return None
-    app_id = proxy_app_id_from_path(urlparse(referer or "").path) or str(last_app_id or "").strip()
+    normalized = str(path or "")
+    if _is_jellyseerr_leaked_path(normalized):
+        return "jellyseerr"
+    referer_app = proxy_app_id_from_path(urlparse(referer or "").path)
+    last_app = str(last_app_id or "").strip()
+    if referer_app and is_public_proxy_app(referer_app) and referer_app != "jellyfin":
+        return referer_app
+    app_id = referer_app or last_app
+    if app_id == "jellyfin" and normalized.startswith("/api/v1"):
+        if last_app and last_app != "jellyfin" and is_public_proxy_app(last_app):
+            return last_app
+        return "jellyseerr"
     if not app_id or not is_public_proxy_app(app_id):
         return None
     return app_id
+
+
+def _is_jellyseerr_leaked_path(path: str) -> bool:
+    normalized = str(path or "")
+    return any(
+        normalized == prefix.rstrip("/") or normalized.startswith(prefix)
+        for prefix in _JELLYSEERR_LEAK_PREFIXES
+    )
 
 
 def is_static_asset_path(path: str) -> bool:
@@ -232,11 +263,16 @@ def proxy_bridge_script(app_id: str) -> str:
         "XMLHttpRequest.prototype.open=function(m,u){arguments[1]=rewrite(u);return o.apply(this,arguments);};"
         "if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,pr){"
         "return pr===undefined?new W(rewrite(u)):new W(rewrite(u),pr);};window.WebSocket.prototype=W.prototype;}"
-        "if(p==='/proxy/jellyseerr'){function fillHost(){var h=document.getElementById('hostname');"
-        "if(!h||h.value)return;var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');"
-        "if(d&&d.set)d.set.call(h,'jellyfin');else h.value='jellyfin';"
-        "h.dispatchEvent(new Event('input',{bubbles:true}));h.dispatchEvent(new Event('change',{bubbles:true}));}"
-        "var n=0,t=setInterval(function(){fillHost();if(++n>48)clearInterval(t);},250);}"
+        "if(p==='/proxy/jellyseerr'){function setv(el,val){if(!el)return;"
+        "var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');"
+        "if(d&&d.set)d.set.call(el,val);else el.value=val;"
+        "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}"
+        "function fillHost(){var h=document.getElementById('hostname');if(h){var cur=(h.value||'').trim().toLowerCase();"
+        "if(!cur||cur==='localhost'||cur==='127.0.0.1'||cur==='0.0.0.0'||cur.indexOf('proxy')>=0)setv(h,'jellyfin');}"
+        "var port=document.getElementById('port');if(port){var pv=(port.value||'').trim();"
+        "if(!pv||pv==='8090'||pv==='80')setv(port,'8096');}"
+        "var ub=document.getElementById('urlBase');if(ub&&/proxy/i.test(ub.value||''))setv(ub,'');}"
+        "var n=0,t=setInterval(function(){fillHost();if(++n>48)clearInterval(t);},250);fillHost();}"
         "})(" + prefix + "," + base + ");</script>"
     )
 
@@ -417,33 +453,23 @@ def rewrite_jellyseerr_jellyfin_connect_body(
     payload: bytes,
     public_hosts: set[str] | None = None,
 ) -> bytes:
-    """Jellyseerr talks to Jellyfin from Docker; localhost/proxy URLs cannot reach it."""
+    """Jellyseerr talks to Jellyfin from Docker; the browser URL cannot reach it."""
+    del public_hosts
     try:
         data = json.loads(payload)
     except (TypeError, ValueError, UnicodeDecodeError):
         return payload
     if not isinstance(data, dict):
         return payload
-    host_key = "hostname" if "hostname" in data else ("ip" if "ip" in data else None)
-    if host_key is None:
+    if "username" not in data and "password" not in data and "email" not in data:
         return payload
-    if not any(key in data for key in ("username", "apiKey", "serverType", "urlBase", "useSsl")):
+    if not any(key in data for key in ("hostname", "port", "useSsl", "urlBase", "ip", "serverType")):
         return payload
-    raw = str(data.get(host_key) or "").strip()
-    if not raw:
-        return payload
-    candidate = raw if "://" in raw else f"http://{raw}"
-    parsed = urlparse(candidate)
-    host_only = str(parsed.hostname or raw.split("/")[0].split(":")[0]).strip().lower()
-    url_base = str(data.get("urlBase") or "")
-    public = {str(host).lower() for host in (public_hosts or set()) if host}
     jellyfin = MEDIA_STACK_APPS["jellyfin"]
-    use_internal = host_only in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or host_only in public
-    if "proxy/jellyfin" in raw.lower() or "proxy/jellyfin" in url_base.lower():
-        use_internal = True
-    if not use_internal:
-        return payload
-    data[host_key] = str(jellyfin["compose_service"])
+    host = str(jellyfin["compose_service"])
+    data["hostname"] = host
+    if "ip" in data:
+        data["ip"] = host
     data["port"] = int(jellyfin["port"])
     data["urlBase"] = ""
     data["useSsl"] = False
@@ -509,19 +535,26 @@ def rewrite_upstream_location(
     return value
 
 
+def cookie_path_for_app(app_id: str) -> str:
+    """Jellyseerr axios calls /api/v1/* at the origin root, so Path=/proxy/jellyseerr drops the session."""
+    if str(app_id) in _ROOT_COOKIE_APPS:
+        return "/"
+    return f"{proxy_prefix(app_id)}/"
+
+
 def rewrite_cookie_header(value: str, app_id: str) -> str:
-    prefix = proxy_prefix(app_id)
+    path = cookie_path_for_app(app_id)
     parts: list[str] = []
     replaced_path = False
     for part in str(value or "").split(";"):
         item = part.strip()
         if item.lower().startswith("path="):
-            parts.append(f"Path={prefix}/")
+            parts.append(f"Path={path}")
             replaced_path = True
         else:
             parts.append(item)
     if not replaced_path:
-        parts.append(f"Path={prefix}/")
+        parts.append(f"Path={path}")
     return "; ".join(p for p in parts if p)
 
 

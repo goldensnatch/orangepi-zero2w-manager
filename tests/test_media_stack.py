@@ -247,6 +247,26 @@ class MediaStackTests(unittest.TestCase):
             )
         )
         self.assertEqual(untouched_connect["hostname"], "jellyfin")
+        empty_host = json.loads(
+            rewrite_jellyseerr_jellyfin_connect_body(
+                b'{"hostname":"","port":8090,"urlBase":"","username":"admin"}'
+            )
+        )
+        self.assertEqual(empty_host["hostname"], "jellyfin")
+        self.assertEqual(empty_host["port"], 8096)
+        lan_host = json.loads(
+            rewrite_jellyseerr_jellyfin_connect_body(
+                b'{"hostname":"orangepizero2w","port":8096,"username":"admin"}',
+                public_hosts={"192.168.1.213"},
+            )
+        )
+        self.assertEqual(lan_host["hostname"], "jellyfin")
+        self.assertEqual(lan_host["port"], 8096)
+        relogin = json.loads(
+            rewrite_jellyseerr_jellyfin_connect_body(b'{"username":"admin","password":"secret"}')
+        )
+        self.assertEqual(relogin["username"], "admin")
+        self.assertNotIn("hostname", relogin)
         next_html = rewrite_html_root_paths(
             b'<html><head></head><script id="__NEXT_DATA__" type="application/json">{"page":"/setup"}</script></html>',
             "jellyseerr",
@@ -347,8 +367,40 @@ class MediaStackTests(unittest.TestCase):
         )
         self.assertEqual(decode_upstream_payload(gzipped, {}), b"<html><head></head></html>")
         self.assertEqual(decode_upstream_payload(b"plain", {}), b"plain")
-        from manager.runtime.app_proxy import leaked_proxy_app_id
+        from manager.runtime.app_proxy import cookie_path_for_app, leaked_proxy_app_id, rewrite_cookie_header
 
+        self.assertEqual(cookie_path_for_app("jellyseerr"), "/")
+        self.assertEqual(cookie_path_for_app("prowlarr"), "/proxy/prowlarr/")
+        self.assertIn("Path=/", rewrite_cookie_header("connect.sid=abc; Path=/", "jellyseerr"))
+        self.assertNotIn(
+            "Path=/proxy/jellyseerr",
+            rewrite_cookie_header("connect.sid=abc; Path=/", "jellyseerr"),
+        )
+        self.assertIn("Path=/proxy/prowlarr/", rewrite_cookie_header("sid=x; Path=/", "prowlarr"))
+        self.assertEqual(
+            leaked_proxy_app_id(
+                path="/api/v1/auth/me",
+                referer="",
+                last_app_id="jellyfin",
+            ),
+            "jellyseerr",
+        )
+        self.assertEqual(
+            leaked_proxy_app_id(
+                path="/api/v1/auth/jellyfin",
+                referer="",
+                last_app_id="jellyfin",
+            ),
+            "jellyseerr",
+        )
+        self.assertEqual(
+            leaked_proxy_app_id(
+                path="/api/v1/auth/me",
+                referer="",
+                last_app_id="",
+            ),
+            "jellyseerr",
+        )
         self.assertEqual(
             leaked_proxy_app_id(
                 path="/initialize.json",
@@ -378,6 +430,14 @@ class MediaStackTests(unittest.TestCase):
                 last_app_id="prowlarr",
             )
         )
+        self.assertEqual(
+            leaked_proxy_app_id(
+                path="/api/v1/indexer",
+                referer="http://192.168.1.216:8090/proxy/prowlarr/",
+                last_app_id="jellyfin",
+            ),
+            "prowlarr",
+        )
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         proxy_fn = source.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
         self.assertIn("is_public_proxy_app(app_id)", proxy_fn)
@@ -390,6 +450,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("wants_upstream_wait_page", proxy_fn)
         self.assertIn("map_jellyfin_upstream_path", proxy_fn)
         self.assertIn("rewrite_jellyseerr_jellyfin_connect_body", proxy_fn)
+        self.assertIn('if app_id not in {"jellyseerr", "jellyfin"}', proxy_fn)
         self.assertIn('Accept-Encoding", "identity"', proxy_fn)
         self.assertNotIn('("Content-Type", "User-Agent")', proxy_fn)
         from manager.runtime.app_proxy import (

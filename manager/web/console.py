@@ -3636,7 +3636,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         proxy_request.add_header("Accept-Encoding", "identity")
         proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
         proxy_request.add_header("X-Forwarded-Proto", "http")
-        proxy_request.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
+        if app_id not in {"jellyseerr", "jellyfin"}:
+            proxy_request.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
         deadline = time.time() + 1.8
         last_url_error: URLError | None = None
         while True:
