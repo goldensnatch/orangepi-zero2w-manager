@@ -478,25 +478,35 @@ def runtime_status() -> str:
 
 
 
-def local_build_version() -> str:
-
+def local_build_version(project_root: Path | None = None) -> str:
+    root = Path(project_root or PROJECT_ROOT)
     explicit = os.environ.get("ROCKY_BUILD_VERSION", "").strip()
     if explicit:
         return explicit
+    version_file = root / "ROCKY_BUILD_VERSION"
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        revision = result.stdout.strip()
-        if revision:
-            return f"rocky@{revision}"
-    except Exception:
+        if version_file.is_file():
+            revision = version_file.read_text(encoding="utf-8").strip()
+            if revision:
+                return f"rocky@{revision}"
+    except OSError:
         pass
+    git_dir = root / ".git"
+    if git_dir.exists():
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            revision = result.stdout.strip()
+            if revision:
+                return f"rocky@{revision}"
+        except Exception:
+            pass
     return "rocky@local"
 
 

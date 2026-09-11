@@ -19,6 +19,14 @@ from manager.runtime import (
     button_server,
 )
 from manager.runtime.context import RuntimeContext
+from manager.runtime.device_quiesce import (
+    desired_mode_signature,
+    is_radio_app,
+    quiesce_device,
+    stop_media_workloads,
+    stop_radio_workloads,
+    write_safe_mode,
+)
 from manager.runtime.launch_requests import catalog_proxy_url, catalog_start_units, consume_launch_request
 from manager.runtime.media_stack import (
     MEDIA_STACK_APPS,
@@ -26,6 +34,12 @@ from manager.runtime.media_stack import (
     MEDIA_STACK_ROOT,
     jellyseerr_needs_volume_recreate,
     media_compose_up_command,
+)
+from manager.runtime.overload import (
+    HARD_OVERLOAD_LOADAVG,
+    loadavg_1,
+    should_shed_workloads,
+    should_skip_docker_probe,
 )
 from manager.runtime.proxy_tokens import build_proxy_token
 from manager.system_probe import network_header_token, network_links_snapshot
@@ -496,12 +510,11 @@ def mode_reconcile_signature(mode_payload: dict[str, Any] | None) -> str:
         mode = {}
     desired = mode.get("desired") if isinstance(mode.get("desired"), dict) else {}
     live = mode.get("live") if isinstance(mode.get("live"), dict) else {}
-    return json.dumps(
+    return desired_mode_signature(
         {
-            "mode_id": str(desired.get("mode_id") or live.get("mode_id") or ""),
+            "selected_mode_id": str(desired.get("mode_id") or live.get("mode_id") or ""),
             "requested_at": str(desired.get("requested_at") or ""),
-        },
-        sort_keys=True,
+        }
     )
 
 
@@ -534,12 +547,16 @@ class ManagerDaemon:
         # Used to prevent the application exit callback from drawing
         # the menu while a deliberate long-press stop is still running.
         self._manual_stop_in_progress = False
-        self._config_poll_interval_seconds = 5.0
+        self._config_poll_interval_seconds = 10.0
+        self._infrastructure_publish_interval_seconds = 30.0
         self._last_published_config_signature: str | None = None
         self._last_config_reconcile_at = 0.0
+        self._last_infrastructure_publish_at = 0.0
         self._last_mode_signature: str | None = None
         self._last_menu_chrome_refresh_at = 0.0
-        self._status_cache_ttl_seconds = 3.0
+        self._last_overload_shed_at = 0.0
+        self._last_exclusion_at = 0.0
+        self._status_cache_ttl_seconds = 8.0
         self._mode_payload_cache: dict[str, Any] | None = None
         self._mode_payload_cached_at = 0.0
         self._menu_header_cache: dict[str, str] | None = None
@@ -549,7 +566,8 @@ class ManagerDaemon:
 
         self._clear_isp_prep_request()
         self._clear_hardware_prep_state()
-        self._publish_reconciled_infrastructure_state(force_refresh=True)
+        if not should_skip_docker_probe():
+            self._publish_reconciled_infrastructure_state(force_refresh=True)
 
     def _clear_runtime_caches(self) -> None:
         self._mode_payload_cache = None
@@ -665,6 +683,9 @@ class ManagerDaemon:
     ) -> bool:
         changed = False
 
+        if should_skip_docker_probe() and not force_refresh:
+            return False
+
         if force_refresh:
             self.context.network_config.reload()
             changed = True
@@ -697,12 +718,14 @@ class ManagerDaemon:
             and now - cached[0] < self._status_cache_ttl_seconds
         ):
             return cached[1]
+        if not force_refresh and should_skip_docker_probe():
+            return cached[1] if cached is not None else 'unknown'
 
         try:
             import subprocess as _sp
             r = _sp.run(
                 ['docker', 'inspect', '--format', '{{.State.Status}}', name],
-                capture_output=True, text=True, timeout=5, check=False,
+                capture_output=True, text=True, timeout=3, check=False,
             )
             if r.returncode != 0:
                 status = 'stopped'
@@ -715,7 +738,7 @@ class ManagerDaemon:
                 return status
             h = _sp.run(
                 ['docker', 'inspect', '--format', '{{.State.Health.Status}}', name],
-                capture_output=True, text=True, timeout=5, check=False,
+                capture_output=True, text=True, timeout=3, check=False,
             )
             if h.returncode == 0 and h.stdout.strip() == 'healthy':
                 status = 'healthy'
@@ -747,6 +770,14 @@ class ManagerDaemon:
     def _start_media_container(self, container_name: str, compose_service: str) -> bool:
         """Create/start a media-stack service, preferring compose so missing containers are created."""
         import subprocess as _sp
+
+        if should_skip_docker_probe():
+            self.log.warning(
+                "Skipping compose up %s; loadavg=%.2f is too high for Docker on this board",
+                compose_service,
+                loadavg_1(),
+            )
+            return False
 
         force = compose_service == "jellyseerr" and jellyseerr_needs_volume_recreate(container_name)
         command = media_compose_up_command(compose_service, force_recreate=force)
@@ -782,6 +813,13 @@ class ManagerDaemon:
         GLUETUN = 'rocky-transfer-gluetun'
         QBT = 'rocky-transfer-qbittorrent'
         PIHOLE = 'rocky-pihole'
+
+        if should_shed_workloads():
+            self._shed_overload_workloads(reason=f"reconcile:{effective_mode_id}")
+            return
+
+        if effective_mode_id in {'entertainment', 'torrent_fortress'}:
+            stop_radio_workloads()
 
         def ensure_media(running: bool) -> None:
             for app_id, spec in MEDIA_STACK_APPS.items():
@@ -911,15 +949,31 @@ class ManagerDaemon:
         ):
             self._last_config_reconcile_at = now
             try:
-                mode_payload = self._resolve_mode_payload()
-                mode_signature = mode_reconcile_signature(mode_payload)
+                if should_shed_workloads():
+                    self._shed_overload_workloads(reason="button_loop")
+                request = self._load_current_mode_request()
+                mode_signature = desired_mode_signature(request)
                 if mode_signature != self._last_mode_signature:
                     self._last_mode_signature = mode_signature
-                    self._publish_runtime_state()
-                    self._reconcile_mode_actions(
-                        str(mode_payload.get("mode", {}).get("live", {}).get("mode_id", "safe"))
+                    mode_id = str(request.get("selected_mode_id") or "safe")
+                    self._publish_runtime_state(
+                        {
+                            "mode": {
+                                "desired": {
+                                    "mode_id": mode_id,
+                                    "requested_at": str(request.get("requested_at") or ""),
+                                }
+                            }
+                        }
                     )
-                self._publish_reconciled_infrastructure_state()
+                    self._reconcile_mode_actions(mode_id)
+                if (
+                    now - self._last_infrastructure_publish_at
+                    >= self._infrastructure_publish_interval_seconds
+                    and not should_skip_docker_probe()
+                ):
+                    self._last_infrastructure_publish_at = now
+                    self._publish_reconciled_infrastructure_state()
             except Exception:
                 self.log.exception(
                     "Failed to reconcile persisted network/transfer config"
@@ -931,7 +985,7 @@ class ManagerDaemon:
             self._last_menu_chrome_refresh_at = now
             try:
                 if hasattr(self.menu, "footer_override"):
-                    self.menu.footer_override = self._mode_footer_text()
+                    self.menu.footer_override = self._lightweight_mode_footer_text()
                 self.menu.render()
             except Exception:
                 self.log.exception("Failed to refresh launcher header")
@@ -948,7 +1002,9 @@ class ManagerDaemon:
             payload = {}
             if values:
                 payload.update(values)
-            mode_payload = self._resolve_mode_payload()
+            mode_payload = self._resolve_mode_payload(
+                include_live_health=not should_skip_docker_probe(),
+            )
             if isinstance(mode_payload, dict):
                 payload["mode"] = mode_payload.get("mode", {})
                 if "web_services" in mode_payload:
@@ -1279,10 +1335,12 @@ class ManagerDaemon:
         self,
         *,
         force_refresh: bool = False,
+        include_live_health: bool = True,
     ) -> dict[str, Any]:
         now = time.monotonic()
         if (
             not force_refresh
+            and include_live_health
             and self._mode_payload_cache is not None
             and now - self._mode_payload_cached_at < self._status_cache_ttl_seconds
         ):
@@ -1300,19 +1358,34 @@ class ManagerDaemon:
         effective_mode_id = str(effective_mode.get('mode_id', selected_mode_id))
         effective_label = str(effective_mode.get('label', effective_mode_id.replace('_', ' ').title()))
 
-        transfer_state = self.transfer_manager.state_snapshot()
+        probe_live = bool(include_live_health) and not should_skip_docker_probe()
+        transfer_state = self.transfer_manager.state_snapshot() if probe_live else {}
         gluetun_ok = bool(transfer_state.get('healthy'))
         qb_enabled = bool(effective_mode.get('transfer', {}).get('enabled'))
         qbt_status = 'running' if qb_enabled and gluetun_ok else ('disabled' if not qb_enabled else 'degraded')
         warnings: list[str] = []
         healthy = True
-        if effective_mode_id == 'torrent_fortress' and not gluetun_ok:
+        if effective_mode_id == 'torrent_fortress' and probe_live and not gluetun_ok:
             warnings.append('transfer_vpn_not_healthy')
             healthy = False
         if effective_mode_id == 'safe' and transfer_state.get('healthy'):
             warnings.append('transfer_stack_active_under_safe_mode')
+        if not probe_live:
+            warnings.append('docker_probes_skipped_high_load')
 
-        service_state = self._build_web_services_state(effective_mode)
+        service_state = (
+            self._build_web_services_state(effective_mode)
+            if probe_live
+            else {'web_services': {}, 'web_service_cache': {}}
+        )
+        media_health = {
+            app_id: (
+                self._docker_container_health(str(spec["container"]))
+                if probe_live
+                else 'unknown'
+            )
+            for app_id, spec in MEDIA_STACK_APPS.items()
+        }
         payload = {
             'mode': {
                 'desired': {
@@ -1329,15 +1402,20 @@ class ManagerDaemon:
                 },
                 'display': effective_mode.get('display', {}),
                 'services': {
-                    'wireguard_admin': self._mode_service_status('wg-quick@wg0'),
+                    'wireguard_admin': (
+                        self._mode_service_status('wg-quick@wg0')
+                        if include_live_health
+                        else 'unknown'
+                    ),
                     'gluetun': 'healthy' if gluetun_ok else 'degraded',
                     'qbittorrent': qbt_status,
-                    'pihole': self._mode_service_status('pihole-FTL'),
+                    'pihole': (
+                        self._mode_service_status('pihole-FTL')
+                        if include_live_health
+                        else 'unknown'
+                    ),
                     'pikvm': str(effective_mode.get('pikvm', {}).get('policy', 'auto')),
-                    **{
-                        app_id: self._docker_container_health(str(spec["container"]))
-                        for app_id, spec in MEDIA_STACK_APPS.items()
-                    },
+                    **media_health,
                 },
                 'policies': {
                     'lan_admin': bool(effective_mode.get('network', {}).get('allow_lan_admin', True)),
@@ -1351,9 +1429,17 @@ class ManagerDaemon:
             'web_services': service_state.get('web_services', {}),
             'web_service_cache': service_state.get('web_service_cache', {}),
         }
-        self._mode_payload_cache = payload
-        self._mode_payload_cached_at = now
+        if include_live_health:
+            self._mode_payload_cache = payload
+            self._mode_payload_cached_at = now
         return json.loads(json.dumps(payload))
+
+    def _lightweight_mode_footer_text(self) -> str:
+        request = self._load_current_mode_request()
+        mode_id = str(request.get("selected_mode_id") or "safe").replace("_", " ").upper()
+        short_label = mode_id.replace(" MODE", "")[:12]
+        load_text = f"LOAD {loadavg_1():.1f}"
+        return f"{short_label} | {load_text}"[:38]
 
     def _mode_footer_text(self, mode_payload: dict[str, Any] | None = None) -> str:
         payload = mode_payload or self._resolve_mode_payload()
@@ -3378,6 +3464,34 @@ class ManagerDaemon:
 
         self.running = False
 
+    def _shed_overload_workloads(self, *, reason: str) -> None:
+        now = time.monotonic()
+        if now - self._last_overload_shed_at < 20.0:
+            return
+        self._last_overload_shed_at = now
+        self.log.warning(
+            "Shedding radio/media workloads (loadavg=%.2f, threshold=%.1f, reason=%s)",
+            loadavg_1(),
+            HARD_OVERLOAD_LOADAVG,
+            reason,
+        )
+        write_safe_mode(reason=f"overload_shed:{reason}")
+        self._last_mode_signature = None
+        self._clear_runtime_caches()
+        report = quiesce_device(write_mode=False, reason=f"overload_shed:{reason}")
+        for error in report.errors:
+            self.log.warning("Quiesce: %s", error)
+        self._quiesce_all_resident_displays()
+
+    def _prepare_exclusive_workload(self, app_id: str) -> None:
+        if is_radio_app(app_id):
+            write_safe_mode(reason=f"radio_launch:{app_id}")
+            self._last_mode_signature = None
+            stop_media_workloads()
+            return
+        if app_id in MEDIA_STACK_APPS or app_id in {"3d_printer", "transfer-stack"}:
+            stop_radio_workloads()
+
     def _apply_console_launch_request(self) -> None:
         request = consume_launch_request()
         if not request:
@@ -3396,6 +3510,14 @@ class ManagerDaemon:
             request.get("source") or "console",
         )
         try:
+            if is_radio_app(app_id) and should_shed_workloads():
+                self.log.warning(
+                    "Refusing to launch %s while loadavg=%.2f",
+                    app_id,
+                    loadavg_1(),
+                )
+                return
+            self._prepare_exclusive_workload(app_id)
             if self._is_resident_display_app(service) or self._is_systemd_display_service(service):
                 self._resume_service_to_foreground(service)
             elif service.get("command"):
@@ -3406,6 +3528,16 @@ class ManagerDaemon:
                     self._run_systemctl("start", units)
         except Exception:
             self.log.exception("Console launch of %s failed", app_id)
+
+    def _enforce_mode_exclusions(self) -> None:
+        now = time.monotonic()
+        if now - self._last_exclusion_at < 8.0:
+            return
+        self._last_exclusion_at = now
+        request = self._load_current_mode_request()
+        mode_id = str(request.get("selected_mode_id") or "").strip()
+        if mode_id in {"entertainment", "torrent_fortress"}:
+            stop_radio_workloads()
 
     def _start_mode_reconcile_thread(self) -> None:
         """Reconcile mode state every 2 seconds."""
@@ -3418,6 +3550,7 @@ class ManagerDaemon:
                     if not self.running:
                         break
                     self._apply_console_launch_request()
+                    self._enforce_mode_exclusions()
                 except Exception:
                     self.log.exception("Launch-request thread error")
         thread = threading.Thread(target=loop, daemon=True, name="mode-reconcile")
@@ -3433,6 +3566,8 @@ class ManagerDaemon:
         button_server.start()
         self._start_mode_reconcile_thread()
         self._quiesce_all_resident_displays()
+        if should_shed_workloads():
+            self._shed_overload_workloads(reason="daemon_start")
 
         self._publish_runtime_state(
             {

@@ -142,7 +142,20 @@ class ResidentAppTests(unittest.TestCase):
         self.assertIn("self._quiesce_all_resident_displays()", daemon)
         apply_fn = daemon.split("def _apply_console_launch_request", 1)[1].split("def _start_mode_reconcile_thread", 1)[0]
         self.assertIn("_resume_service_to_foreground", apply_fn)
-        self.assertNotIn("if units:\n                self._run_systemctl", apply_fn)
+        self.assertIn("_prepare_exclusive_workload", apply_fn)
+        self.assertIn("should_shed_workloads", apply_fn)
+        self.assertNotIn(
+            "self._run_systemctl(\"start\", units)\n            if self._is_resident_display_app",
+            apply_fn,
+        )
+        daemon = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")
+        self.assertIn("desired_mode_signature(request)", daemon)
+        self.assertIn("_lightweight_mode_footer_text", daemon)
+        self.assertIn("self._enforce_mode_exclusions()", daemon)
+        self.assertIn("self._shed_overload_workloads", daemon)
+        button_loop = daemon.split("def _button_loop_should_continue", 1)[1].split("def _publish_runtime_state", 1)[0]
+        self.assertNotIn("self._resolve_mode_payload()", button_loop)
+        self.assertIn("desired_mode_signature(request)", button_loop)
 
 
 if __name__ == "__main__":
