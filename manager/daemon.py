@@ -19,7 +19,7 @@ from manager.runtime import (
     button_server,
 )
 from manager.runtime.context import RuntimeContext
-from manager.runtime.launch_requests import catalog_proxy_url, consume_launch_request
+from manager.runtime.launch_requests import catalog_proxy_url, catalog_start_units, consume_launch_request
 from manager.runtime.media_stack import (
     MEDIA_STACK_APPS,
     MEDIA_STACK_COMPOSE,
@@ -2987,6 +2987,10 @@ class ManagerDaemon:
         if self.menu_visible:
             self.hide_menu()
 
+        units = catalog_start_units(service)
+        if units:
+            self._run_systemctl("start", units)
+
         process = self.application_manager.launch(
             service
         )
@@ -3366,9 +3370,12 @@ class ManagerDaemon:
             request.get("source") or "console",
         )
         try:
-            if self._is_resident_display_app(service):
+            units = catalog_start_units(service)
+            if units:
+                self._run_systemctl("start", units)
+            if self._is_resident_display_app(service) or self._is_systemd_display_service(service):
                 self._resume_service_to_foreground(service)
-            else:
+            elif service.get("command"):
                 self._activate_service(service)
         except Exception:
             self.log.exception("Console launch of %s failed", app_id)

@@ -75,7 +75,29 @@ class ResidentAppTests(unittest.TestCase):
             config.write_text("[ui.web]\nenabled = false\nport = 9898\n", encoding="utf-8")
             self.assertIsNone(pwnagotchi_web_url((config,)))
 
-    def test_console_requests_resident_launch(self) -> None:
+    def test_console_delegates_system_units_to_daemon(self) -> None:
+        from manager.runtime.launch_requests import catalog_start_units, needs_daemon_launch
+
+        catalog = json.loads((ROOT / "config" / "services.json").read_text(encoding="utf-8"))
+        printer = catalog["3d_printer"]
+        self.assertTrue(needs_daemon_launch(printer))
+        self.assertEqual(catalog_start_units(printer), ["klipper", "moonraker", "nginx"])
+        self.assertTrue(needs_daemon_launch(catalog["pikvm"]))
+        self.assertFalse(
+            needs_daemon_launch(
+                {
+                    "name": "Switch Transfer",
+                    "systemd_user_service": "rocky-switch-transfer.service",
+                    "url": "http://127.0.0.1:8077/",
+                }
+            )
+        )
+        source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
+        launch_fn = source.split("def handle_app_launch", 1)[1].split("def apps_payload", 1)[0]
+        self.assertIn("needs_daemon_launch(service)", launch_fn)
+        self.assertNotIn('["systemctl", "start", unit]', launch_fn)
+        daemon = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")
+        self.assertIn("catalog_start_units(service)", daemon)
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         self.assertIn("write_launch_request", source)
         self.assertIn("catalog_proxy_url", source)

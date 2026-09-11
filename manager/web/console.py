@@ -71,7 +71,7 @@ from manager.runtime.app_proxy import (
     wants_upstream_wait_page,
 )
 from manager.runtime.service_catalog import ServiceCatalog
-from manager.runtime.launch_requests import catalog_proxy_url, write_launch_request
+from manager.runtime.launch_requests import catalog_proxy_url, needs_daemon_launch, write_launch_request
 from manager.runtime.proxy_tokens import (
     build_proxy_token as mint_proxy_token,
     validate_proxy_token as check_proxy_token,
@@ -3334,7 +3334,6 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             self.send_json_error(HTTPStatus.NOT_FOUND, "unknown_app", app_id=app_id)
             return
 
-        unit = str(service.get("systemd_service") or service.get("service") or "").strip()
         user_unit = str(service.get("systemd_user_service") or "").strip()
         container = str(service.get("docker_container") or "").strip()
         raw_url = catalog_proxy_url(app_id, service)
@@ -3363,7 +3362,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 f"requested mode {mode_request.get('selected_mode_id')} via {CURRENT_MODE_REQUEST_PATH}"
             )
 
-        if service.get("resident_display") or service.get("display_owner"):
+        if needs_daemon_launch(service):
             write_launch_request(app_id, source="console")
             actions.append(f"requested {app_id} via zero2w-manager.service")
             self.send_json(
@@ -3378,11 +3377,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             return
 
         ok = True
-        if unit:
-            result = subprocess.run(["systemctl", "start", unit], capture_output=True, text=True, check=False, timeout=20)
-            ok = ok and result.returncode == 0
-            actions.append((result.stdout or result.stderr or f"systemctl start {unit}: {result.returncode}").strip())
-        elif user_unit:
+        if user_unit:
             result = subprocess.run(["systemctl", "--user", "start", user_unit], capture_output=True, text=True, check=False, timeout=20)
             ok = ok and result.returncode == 0
             actions.append((result.stdout or result.stderr or f"systemctl --user start {user_unit}: {result.returncode}").strip())

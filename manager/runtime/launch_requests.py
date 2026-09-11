@@ -83,6 +83,27 @@ def pwnagotchi_web_url(config_paths: tuple[Path, ...] | None = None) -> str | No
     return None
 
 
+def needs_daemon_launch(service: dict[str, Any] | None) -> bool:
+    """System units and display apps must be started by zero2w-manager, not rocky-web."""
+    if not isinstance(service, dict):
+        return False
+    if service.get("resident_display") or service.get("display_owner"):
+        return True
+    if str(service.get("systemd_service") or service.get("service") or "").strip():
+        return True
+    return bool(service.get("command"))
+
+
+def catalog_start_units(service: dict[str, Any] | None) -> list[str]:
+    if not isinstance(service, dict):
+        return []
+    units = service.get("start_services")
+    if isinstance(units, list) and units:
+        return [str(unit).strip() for unit in units if str(unit).strip()]
+    primary = str(service.get("systemd_service") or service.get("service") or "").strip()
+    return [primary] if primary else []
+
+
 def catalog_proxy_url(app_id: str, service: dict[str, Any] | None = None) -> str | None:
     spec = service if isinstance(service, dict) else {}
     raw = spec.get("url")

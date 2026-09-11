@@ -215,6 +215,11 @@
     "type": "application",
     "url": "http://127.0.0.1:84/",
     "systemd_service": "klipper",
+    "start_services": [
+      "klipper",
+      "moonraker",
+      "nginx"
+    ],
     "docker_container": null,
     "working_directory": "/opt/zero2w-manager"
   },
