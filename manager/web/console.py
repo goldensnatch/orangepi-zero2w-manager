@@ -54,6 +54,7 @@ from manager.runtime.app_proxy import (
     build_websocket_upstream_request,
     decode_upstream_payload,
     filter_browser_cookies_for_upstream,
+    forwarded_upstream_query,
     is_console_chrome_path,
     is_media_health_endpoint,
     is_proxy_bridge_path,
@@ -3956,16 +3957,10 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         target_path = "/" + remainder if remainder else "/"
         if app_id == "jellyfin":
             target_path = map_jellyfin_upstream_path(target_path)
-        query_suffix = ""
-        if forwarded_query:
-            parsed_query = parse_qs(forwarded_query, keep_blank_values=True)
-            parsed_query.pop("access_token", None)
-            query_parts: list[str] = []
-            for key, values in parsed_query.items():
-                for value in values:
-                    query_parts.append(f"{quote(str(key))}={quote(str(value))}")
-            if query_parts:
-                query_suffix = "?" + "&".join(query_parts)
+        query_suffix = forwarded_upstream_query(
+            forwarded_query,
+            is_rocky_token=lambda token: self.validate_proxy_token(token, app_id),
+        )
         if is_websocket_upgrade(self.headers):
             if is_transfer_proxy_app(app_id):
                 self._ensure_transfer_stack_starting(app_id=app_id)

@@ -4,7 +4,7 @@ import gzip
 import json
 import re
 import zlib
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
 
 from manager.runtime.media_stack import (
     MEDIA_STACK_APPS,
@@ -151,6 +151,26 @@ def static_asset_from_login_query(query: str) -> str | None:
             candidate = "/" + candidate
         return candidate
     return None
+
+
+def forwarded_upstream_query(query: str, *, is_rocky_token) -> str:
+    """Drop Rocky's proxy access_token; keep *arr SignalR/API access_token."""
+    parsed = parse_qs(str(query or ""), keep_blank_values=True)
+    kept_tokens = [
+        token
+        for token in parsed.get("access_token", [])
+        if token and not is_rocky_token(token)
+    ]
+    parsed.pop("access_token", None)
+    if kept_tokens:
+        parsed["access_token"] = kept_tokens
+    parts: list[str] = []
+    for key, values in parsed.items():
+        for value in values:
+            parts.append(f"{quote(str(key))}={quote(str(value))}")
+    if not parts:
+        return ""
+    return "?" + "&".join(parts)
 
 
 def leaked_proxy_app_id(

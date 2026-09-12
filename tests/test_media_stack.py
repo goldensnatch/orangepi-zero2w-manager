@@ -909,6 +909,35 @@ class MediaStackTests(unittest.TestCase):
             "jellyfin",
         )
 
+    def test_arr_signalr_keeps_app_access_token(self) -> None:
+        from manager.runtime.app_proxy import forwarded_upstream_query
+
+        def is_rocky(token: str) -> bool:
+            return token == "rocky-token"
+
+        stripped = forwarded_upstream_query(
+            "access_token=rocky-token&foo=1",
+            is_rocky_token=is_rocky,
+        )
+        self.assertEqual(stripped, "?foo=1")
+        kept = forwarded_upstream_query(
+            "access_token=prowlarr-api-key&negotiateVersion=1",
+            is_rocky_token=is_rocky,
+        )
+        self.assertIn("access_token=prowlarr-api-key", kept)
+        self.assertIn("negotiateVersion=1", kept)
+        mixed = forwarded_upstream_query(
+            "access_token=rocky-token&access_token=prowlarr-api-key&negotiateVersion=1",
+            is_rocky_token=is_rocky,
+        )
+        self.assertIn("prowlarr-api-key", mixed)
+        self.assertNotIn("rocky-token", mixed)
+        self.assertEqual(forwarded_upstream_query("access_token=rocky-token", is_rocky_token=is_rocky), "")
+        source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
+        proxy_fn = source.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
+        self.assertIn("forwarded_upstream_query", proxy_fn)
+        self.assertNotIn("parsed_query.pop", proxy_fn)
+
     def test_wait_page_only_for_documents_across_all_media_apps(self) -> None:
         from manager.runtime.app_proxy import (
             proxy_retry_seconds,
