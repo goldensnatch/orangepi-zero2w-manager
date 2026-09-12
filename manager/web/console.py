@@ -15,6 +15,7 @@ import mimetypes
 import os
 import re
 import secrets
+import select
 import shutil
 import socket
 import subprocess
@@ -50,6 +51,7 @@ from manager.api import runtime_status as runtime_status_api
 from manager.runtime import network_transfer as network_transfer_runtime
 from manager.runtime.app_proxy import (
     LAST_PROXY_APP_COOKIE,
+    build_websocket_upstream_request,
     decode_upstream_payload,
     filter_browser_cookies_for_upstream,
     is_console_chrome_path,
@@ -57,6 +59,7 @@ from manager.runtime.app_proxy import (
     is_proxy_bridge_path,
     is_public_proxy_app,
     is_upstream_unavailable,
+    is_websocket_upgrade,
     leaked_proxy_app_id,
     map_jellyfin_upstream_path,
     proxied_app_login_location,
@@ -3821,6 +3824,84 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         headers["Content-Length"] = str(len(payload))
         return payload, headers
 
+    def _shuttle_sockets(self, left, right) -> None:
+        sockets = [left, right]
+        try:
+            while True:
+                readable, _, exceptional = select.select(sockets, [], sockets, 300)
+                if exceptional:
+                    return
+                if not readable:
+                    continue
+                for src in readable:
+                    try:
+                        data = src.recv(65536)
+                    except OSError:
+                        return
+                    if not data:
+                        return
+                    dst = right if src is left else left
+                    try:
+                        dst.sendall(data)
+                    except OSError:
+                        return
+        except (ValueError, OSError):
+            return
+
+    def _proxy_websocket(self, app_id: str, base: str, target_path: str, query_suffix: str) -> None:
+        """Tunnel a browser WebSocket through Rocky onto the app's loopback port."""
+        self.close_connection = True
+        parsed = urlparse(base)
+        host = parsed.hostname or "127.0.0.1"
+        port = int(parsed.port or 80)
+        path = target_path + query_suffix
+        cookie_header = filter_browser_cookies_for_upstream(self.headers.get("Cookie", ""))
+        request_bytes = build_websocket_upstream_request(
+            path,
+            self.headers,
+            parsed.netloc,
+            cookie_header=cookie_header,
+        )
+        upstream = None
+        wrote = False
+        try:
+            upstream = socket.create_connection((host, port), timeout=10)
+            try:
+                upstream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            upstream.sendall(request_bytes)
+            header_blob = b""
+            while b"\r\n\r\n" not in header_blob:
+                chunk = upstream.recv(4096)
+                if not chunk:
+                    break
+                header_blob += chunk
+                if len(header_blob) > 65536:
+                    break
+            if b"\r\n\r\n" not in header_blob:
+                raise OSError("websocket handshake closed")
+            self.wfile.write(header_blob)
+            self.wfile.flush()
+            wrote = True
+            self._shuttle_sockets(self.connection, upstream)
+        except OSError as exc:
+            self.log_error("WebSocket proxy %s failed: %s", app_id, exc)
+            if not wrote:
+                payload, headers = upstream_unavailable_error_response(app_id, target_path)
+                self.proxy_response(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    payload,
+                    headers,
+                )
+        finally:
+            if upstream is not None:
+                try:
+                    upstream.close()
+                except OSError:
+                    pass
+
     def handle_proxy(self, request, *, method: str) -> None:
 
         proxy_path = request.path[len("/proxy/"):]
@@ -3885,6 +3966,14 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     query_parts.append(f"{quote(str(key))}={quote(str(value))}")
             if query_parts:
                 query_suffix = "?" + "&".join(query_parts)
+        if is_websocket_upgrade(self.headers):
+            if is_transfer_proxy_app(app_id):
+                self._ensure_transfer_stack_starting(app_id=app_id)
+            elif app_id in MEDIA_STACK_APPS:
+                self._ensure_media_app_starting(app_id)
+            active_base = self.proxy_base_for_app(app_id) or base
+            self._proxy_websocket(app_id, active_base, target_path, query_suffix)
+            return
         body = None
         if method in {"POST", "PUT", "PATCH"}:
             length = int(self.headers.get("Content-Length", "0") or "0")

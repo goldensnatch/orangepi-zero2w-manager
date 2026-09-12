@@ -473,6 +473,51 @@ def filter_browser_cookies_for_upstream(cookie_header: str) -> str:
     return "; ".join(kept)
 
 
+def is_websocket_upgrade(headers) -> bool:
+    connection = str(headers.get("Connection") or "")
+    upgrade = str(headers.get("Upgrade") or "")
+    return "upgrade" in connection.lower() and upgrade.lower() == "websocket"
+
+
+_WEBSOCKET_SKIP_HEADERS = {
+    "host",
+    "content-length",
+    "content-encoding",
+    "accept-encoding",
+    "transfer-encoding",
+    "proxy-connection",
+    "cookie",
+}
+
+
+def build_websocket_upstream_request(
+    path: str,
+    headers,
+    upstream_netloc: str,
+    cookie_header: str = "",
+) -> bytes:
+    """HTTP/1.1 Upgrade request for a byte-for-byte WebSocket tunnel."""
+    resource = str(path or "/")
+    if not resource.startswith("/"):
+        resource = "/" + resource
+    lines = [f"GET {resource} HTTP/1.1", f"Host: {upstream_netloc}"]
+    seen: set[str] = {"host"}
+    items = headers.items() if hasattr(headers, "items") else []
+    for name, value in items:
+        lower = str(name or "").lower()
+        if not value or lower in _WEBSOCKET_SKIP_HEADERS or lower.startswith("x-forwarded-"):
+            continue
+        lines.append(f"{name}: {value}")
+        seen.add(lower)
+    if cookie_header:
+        lines.append(f"Cookie: {cookie_header}")
+    if "upgrade" not in seen:
+        lines.append("Upgrade: websocket")
+    if "connection" not in seen:
+        lines.append("Connection: Upgrade")
+    return ("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1")
+
+
 def select_upstream_request_headers(headers, *, app_id: str = "") -> list[tuple[str, str]]:
     """Copy browser headers *arr/Jellyfin need (X-Api-Key, Authorization, …)."""
     skip_origin = str(app_id or "") in TRANSFER_PROXY_APP_IDS

@@ -834,6 +834,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertEqual(proxy_prefix("jellyfin"), "/proxy/jellyfin")
         self.assertEqual(proxy_document_base("jellyfin"), "/proxy/jellyfin/web/")
         self.assertEqual(map_jellyfin_upstream_path("/System/Info/Public"), "/System/Info/Public")
+        self.assertEqual(map_jellyfin_upstream_path("/socket"), "/socket")
         bridge = proxy_bridge_js("jellyfin")
         self.assertIn('"/proxy/jellyfin"', bridge)
         self.assertIn('"/proxy/jellyfin/web/"', bridge)
@@ -844,16 +845,69 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("initialize\\.json", bridge)
         self.assertNotIn("function loop()", bridge)
         self.assertNotIn("pinInfo", bridge)
-        self.assertNotIn("data.LocalAddress=origin", bridge)
+        self.assertIn("window.WebSocket", bridge)
+        self.assertIn("x.protocol==='ws:'", bridge)
         console_src = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         proxy_fn = console_src.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
         self.assertIn("upstream_unavailable_error_response", proxy_fn)
         self.assertIn("wants_upstream_wait_page", proxy_fn)
         self.assertIn('if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"}', proxy_fn)
+        self.assertIn("is_websocket_upgrade(self.headers)", proxy_fn)
+        self.assertIn("_proxy_websocket", proxy_fn)
+        before_opener, _, _ = proxy_fn.partition("PROXY_OPENER.open")
+        self.assertIn("_proxy_websocket", before_opener)
         daemon_src = (ROOT / "manager" / "daemon.py").read_text(encoding="utf-8")
         print_lab = daemon_src.split("elif effective_mode_id == 'print_lab':", 1)[1].split("else:", 1)[0]
         self.assertNotIn("ensure_media(False)", print_lab)
         self.assertIn("ensure_media(False)", daemon_src.split("if effective_mode_id == 'safe':", 1)[1].split("elif", 1)[0])
+
+    def test_jellyfin_websocket_upgrade_is_tunneled(self) -> None:
+        from manager.runtime.app_proxy import (
+            build_websocket_upstream_request,
+            is_websocket_upgrade,
+            leaked_proxy_app_id,
+            map_jellyfin_upstream_path,
+        )
+
+        class Headers(dict):
+            def get(self, key, default=""):
+                for name, value in self.items():
+                    if str(name).lower() == str(key).lower():
+                        return value
+                return default
+
+        headers = Headers(
+            {
+                "Connection": "Upgrade",
+                "Upgrade": "websocket",
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                "Sec-WebSocket-Version": "13",
+                "Origin": "http://192.168.1.213:8090",
+                "Host": "192.168.1.213:8090",
+                "Cookie": "rocky_session=nope; SID=keep",
+                "X-Forwarded-Host": "192.168.1.213:8090",
+            }
+        )
+        self.assertTrue(is_websocket_upgrade(headers))
+        raw = build_websocket_upstream_request(
+            "/socket?api_key=abc",
+            headers,
+            "127.0.0.1:8096",
+            cookie_header="SID=keep",
+        )
+        text = raw.decode("iso-8859-1")
+        self.assertTrue(text.startswith("GET /socket?api_key=abc HTTP/1.1\r\n"))
+        self.assertIn("Host: 127.0.0.1:8096\r\n", text)
+        self.assertIn("Upgrade: websocket\r\n", text)
+        self.assertIn("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n", text)
+        self.assertIn("Cookie: SID=keep\r\n", text)
+        self.assertNotIn("X-Forwarded-Host", text)
+        self.assertNotIn("Host: 192.168.1.213:8090", text)
+        self.assertEqual(map_jellyfin_upstream_path("/socket"), "/socket")
+        self.assertEqual(
+            leaked_proxy_app_id(path="/socket", last_app_id="jellyfin"),
+            "jellyfin",
+        )
 
     def test_wait_page_only_for_documents_across_all_media_apps(self) -> None:
         from manager.runtime.app_proxy import (
