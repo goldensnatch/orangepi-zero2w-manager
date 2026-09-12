@@ -10,7 +10,7 @@ Group=rocky-web
 WorkingDirectory=/opt/zero2w-manager
 EnvironmentFile=-/etc/rocky-web.env
 Environment=PYTHONUNBUFFERED=1
-ExecStartPre=+/opt/zero2w-manager/venv/bin/python3 /opt/zero2w-manager/scripts/ensure_mode_config_permissions.py
+ExecStartPre=-+/opt/zero2w-manager/venv/bin/python3 /opt/zero2w-manager/scripts/ensure_mode_config_permissions.py
 ExecStart=/opt/zero2w-manager/venv/bin/python3 -m manager.web.console
 Restart=on-failure
 RestartSec=5

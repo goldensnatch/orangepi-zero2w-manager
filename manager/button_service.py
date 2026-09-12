@@ -6,7 +6,12 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from evdev import InputDevice, ecodes, list_devices
+try:
+    from evdev import InputDevice, ecodes, list_devices
+except ImportError:  # pragma: no cover - device venv may lag the repo
+    InputDevice = None  # type: ignore[misc, assignment]
+    ecodes = None  # type: ignore[misc, assignment]
+    list_devices = None  # type: ignore[misc, assignment]
 
 
 LOGGER = logging.getLogger(__name__)
@@ -57,6 +62,8 @@ class ButtonService:
         return float(sec) + (float(usec) / 1_000_000.0)
 
     def find_device(self) -> InputDevice:
+        if list_devices is None or InputDevice is None:
+            raise RuntimeError("evdev is not installed; cannot open LRADC buttons")
         for path in list_devices():
             device = InputDevice(path)
 
@@ -73,7 +80,7 @@ class ButtonService:
         raise RuntimeError("LRADC button device not found")
 
     def handle_event(self, event) -> None:
-        if event.type != ecodes.EV_KEY:
+        if ecodes is None or event.type != ecodes.EV_KEY:
             return
 
         code = int(event.code)
