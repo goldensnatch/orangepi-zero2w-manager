@@ -3595,6 +3595,9 @@ class ManagerDaemon:
             request.get("source") or "console",
         )
         try:
+            if app_id == "3d_printer":
+                for unit in ("klipper", "moonraker", "nginx"):
+                    self._run_systemctl("start", [unit])
             if is_radio_app(app_id) and should_shed_workloads():
                 self.log.warning(
                     "Refusing to launch %s while loadavg=%.2f",
