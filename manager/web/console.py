@@ -122,6 +122,8 @@ _TRANSFER_ENSURE_LOCK = threading.Lock()
 _TRANSFER_ENSURE_AT = 0.0
 _MEDIA_ENSURE_LOCK = threading.Lock()
 _MEDIA_ENSURE_AT: dict[str, float] = {}
+_PRINT_LAB_ENSURE_LOCK = threading.Lock()
+_PRINT_LAB_ENSURE_AT = 0.0
 _CONSOLE_FAVICON_SVG = (
     b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
     b'<rect width="32" height="32" rx="6" fill="#060a0f"/>'
@@ -3511,6 +3513,25 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             self.log_error("Media launch request failed: %s", exc)
         self._kick_media_container(app_id)
 
+    def _ensure_print_lab_starting(self) -> None:
+        global _PRINT_LAB_ENSURE_AT
+        with _PRINT_LAB_ENSURE_LOCK:
+            now = time.monotonic()
+            if now - _PRINT_LAB_ENSURE_AT < 4.0:
+                return
+            _PRINT_LAB_ENSURE_AT = now
+        try:
+            current = str(self.load_current_mode_request_snapshot().get("selected_mode_id") or "")
+            mode = print_lab_activate_mode(current)
+            if mode:
+                self.apply_app_activation_mode({"activate_mode": mode}, "3d_printer")
+        except OSError as exc:
+            self.log_error("Print Lab mode activation failed: %s", exc)
+        try:
+            write_launch_request("3d_printer", source="console-proxy")
+        except OSError as exc:
+            self.log_error("Print Lab launch request failed: %s", exc)
+
     def _launch_transfer_stack(self, app_id: str) -> None:
         try:
             self._activate_transfer_mode()
@@ -3966,6 +3987,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 self._ensure_transfer_stack_starting(app_id=app_id)
             elif app_id in MEDIA_STACK_APPS:
                 self._ensure_media_app_starting(app_id)
+            elif app_id == "3d_printer":
+                self._ensure_print_lab_starting()
             active_base = self.proxy_base_for_app(app_id) or base
             self._proxy_websocket(app_id, active_base, target_path, query_suffix)
             return
@@ -4001,6 +4024,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             self._ensure_transfer_stack_starting(app_id=app_id)
         elif app_id in MEDIA_STACK_APPS:
             self._ensure_media_app_starting(app_id)
+        elif app_id == "3d_printer":
+            self._ensure_print_lab_starting()
         proxy_timeout = 60 if app_id == "jellyseerr" and method in {"POST", "PUT", "PATCH"} else 20
         retry_seconds = proxy_retry_seconds(app_id, target_path)
         deadline = time.time() + retry_seconds
@@ -4030,15 +4055,28 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     )
                     return
             except HTTPError as exc:
-                if (
+                retryable_http_startup = (
                     exc.code in {502, 503, 504}
-                    and is_media_health_endpoint(target_path)
                     and time.time() < deadline
-                ):
+                    and (
+                        is_media_health_endpoint(target_path)
+                        or (
+                            app_id == "3d_printer"
+                            and wants_upstream_wait_page(
+                                method,
+                                target_path,
+                                self.headers.get("Accept", ""),
+                                app_id,
+                            )
+                        )
+                    )
+                )
+                if retryable_http_startup:
                     try:
                         exc.read()
                     except Exception:
                         pass
+                    last_url_error = exc
                     time.sleep(0.45)
                     continue
                 payload = decode_upstream_payload(exc.read(), exc.headers)
