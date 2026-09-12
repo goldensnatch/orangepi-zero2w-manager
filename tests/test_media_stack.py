@@ -581,6 +581,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("upstream_unavailable_error_response", proxy_fn)
         self.assertNotIn("Proxy unavailable", proxy_fn)
         self.assertIn("map_jellyfin_upstream_path", proxy_fn)
+        self.assertIn("rewrite_jellyfin_system_info", source)
         self.assertIn("rewrite_jellyseerr_jellyfin_connect_body", proxy_fn)
         self.assertIn("path=target_path", proxy_fn)
         self.assertIn("is_proxy_bridge_path", proxy_fn)
@@ -615,6 +616,14 @@ class MediaStackTests(unittest.TestCase):
             'if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"} | TRANSFER_PROXY_APP_IDS',
             proxy_fn,
         )
+        self.assertIn(
+            'elif app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"}:',
+            proxy_fn,
+        )
+        self.assertIn('X-Forwarded-Host', proxy_fn)
+        self.assertIn("is_media_health_endpoint(target_path)", proxy_fn)
+        self.assertIn("active_base = self.proxy_base_for_app(app_id) or base", proxy_fn)
+        self.assertIn("_media_port_listening", source)
         self.assertIn('Accept-Encoding", "identity"', proxy_fn)
         self.assertNotIn('("Content-Type", "User-Agent")', proxy_fn)
         from http.client import RemoteDisconnected
@@ -623,6 +632,7 @@ class MediaStackTests(unittest.TestCase):
             is_connection_refused,
             is_upstream_unavailable,
             proxy_retry_seconds,
+            rewrite_jellyfin_system_info,
             upstream_starting_page,
             upstream_unavailable_api_payload,
             upstream_unavailable_error_response,
@@ -746,7 +756,18 @@ class MediaStackTests(unittest.TestCase):
             wants_upstream_wait_page("GET", "/web/", "application/json", "jellyfin")
         )
         self.assertGreater(proxy_retry_seconds("jellyfin", "/System/Info/Public"), 1.8)
-        self.assertLess(proxy_retry_seconds("jellyfin", "/System/Info/Public"), 12)
+        self.assertGreaterEqual(proxy_retry_seconds("jellyfin", "/System/Info/Public"), 40)
+        rewritten_info = json.loads(
+            rewrite_jellyfin_system_info(
+                b'{"LocalAddress":"http://[::1]:8096","WanAddress":"http://192.168.1.213:8090","Address":"http://192.168.1.213:8090","Version":"10.11.11"}',
+                public_origin="http://192.168.1.213:8090",
+                path="/System/Info/Public",
+                content_type="application/json",
+            )
+        )
+        self.assertEqual(rewritten_info["LocalAddress"], "http://192.168.1.213:8090/proxy/jellyfin")
+        self.assertEqual(rewritten_info["WanAddress"], "http://192.168.1.213:8090/proxy/jellyfin")
+        self.assertEqual(rewritten_info["Address"], "http://192.168.1.213:8090/proxy/jellyfin")
         self.assertEqual(proxy_retry_seconds("jellyfin", "/web/index.html"), 1.8)
         self.assertEqual(proxy_retry_seconds("jellyfin", "/web/main.css"), 1.8)
         self.assertEqual(proxy_retry_seconds("jellyseerr", "/"), 1.8)
@@ -807,6 +828,10 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("hn==='::1'", bridge)
         self.assertIn("p==='/proxy/jellyfin'", bridge)
         self.assertIn("x.port)==='8096'", bridge)
+        self.assertIn("function loop(){return once().then(function(r){", bridge)
+        self.assertIn("if(r&&r.ok)return pinInfo(r);", bridge)
+        self.assertIn("this.timeout=0", bridge)
+        self.assertIn("data.Address=origin", bridge)
         console_src = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         proxy_fn = console_src.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
         self.assertIn("upstream_unavailable_error_response", proxy_fn)

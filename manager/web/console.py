@@ -53,6 +53,7 @@ from manager.runtime.app_proxy import (
     decode_upstream_payload,
     filter_browser_cookies_for_upstream,
     is_console_chrome_path,
+    is_media_health_endpoint,
     is_proxy_bridge_path,
     is_public_proxy_app,
     is_upstream_unavailable,
@@ -66,6 +67,7 @@ from manager.runtime.app_proxy import (
     rewrite_arr_initialize_json,
     rewrite_html_root_paths,
     rewrite_jellyseerr_jellyfin_connect_body,
+    rewrite_jellyfin_system_info,
     select_upstream_request_headers,
     static_asset_from_login_query,
     suppress_login_redirect_for_asset,
@@ -3273,10 +3275,30 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + quote(target_url, safe="")
 
+    def _tcp_port_open(self, port: int, host: str = "127.0.0.1", timeout: float = 0.8) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def _media_port_listening(self, port: int, timeout: float = 0.2) -> bool:
+        return self._tcp_port_open(port, "127.0.0.1", timeout=timeout) or self._tcp_port_open(
+            port, "::1", timeout=timeout
+        )
+
     def proxy_base_for_app(self, app_id: str) -> str | None:
 
         if is_transfer_proxy_app(app_id):
             return TRANSFER_STACK_LOCAL_URL
+        spec = MEDIA_STACK_APPS.get(app_id)
+        if spec:
+            port = int(spec["port"])
+            if self._tcp_port_open(port, "127.0.0.1", timeout=0.15):
+                return f"http://127.0.0.1:{port}"
+            if self._tcp_port_open(port, "::1", timeout=0.15):
+                return f"http://[::1]:{port}"
+            return str(spec["local_url"]).rstrip("/")
         service = ServiceCatalog().get(app_id)
         if not service:
             return None
@@ -3300,13 +3322,6 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         if morsel is None:
             return False
         return self.validate_proxy_token(morsel.value, app_id)
-
-    def _tcp_port_open(self, port: int, host: str = "127.0.0.1", timeout: float = 0.8) -> bool:
-        try:
-            with socket.create_connection((host, port), timeout=timeout):
-                return True
-        except OSError:
-            return False
 
     def _media_launch_target(self, app_id: str) -> dict[str, object] | None:
         return media_launch_target(app_id)
@@ -3341,7 +3356,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         open_url = self._tokenized_media_url(app_id)
 
         recreate = app_id == "jellyseerr" and jellyseerr_needs_volume_recreate(container, compose_dir)
-        if self._tcp_port_open(port) and not recreate:
+        if self._media_port_listening(port) and not recreate:
             return {"ok": True, "app_id": app_id, "status": "running", "already_running": True, "open_url": open_url}
 
         # Radarr/Sonarr/Bazarr can exit cleanly because stale pid files survive an earlier crash.
@@ -3376,7 +3391,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         deadline = time.time() + 12
         while time.time() < deadline:
-            if self._tcp_port_open(port):
+            if self._media_port_listening(port):
                 return {
                     "ok": True,
                     "app_id": app_id,
@@ -3453,7 +3468,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         if not target:
             return
         port = int(target["port"])
-        if self._tcp_port_open(port, timeout=0.2):
+        if self._media_port_listening(port, timeout=0.2):
             return
         container = str(target["container"])
         compose_service = str(target["compose_service"])
@@ -3794,6 +3809,15 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         content_type = str(headers.get("Content-Type") or headers.get("content-type") or "")
         payload = rewrite_html_root_paths(payload, app_id, content_type)
         payload = rewrite_arr_initialize_json(payload, app_id, content_type, target_path)
+        if app_id == "jellyfin":
+            host = str(self.headers.get("Host") or "").split(",")[0].strip()
+            public_origin = f"http://{host}" if host else ""
+            payload = rewrite_jellyfin_system_info(
+                payload,
+                public_origin=public_origin,
+                path=target_path,
+                content_type=content_type,
+            )
         headers["Content-Length"] = str(len(payload))
         return payload, headers
 
@@ -3851,7 +3875,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         target_path = "/" + remainder if remainder else "/"
         if app_id == "jellyfin":
             target_path = map_jellyfin_upstream_path(target_path)
-        target = base.rstrip("/") + target_path
+        query_suffix = ""
         if forwarded_query:
             parsed_query = parse_qs(forwarded_query, keep_blank_values=True)
             parsed_query.pop("access_token", None)
@@ -3860,7 +3884,7 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 for value in values:
                     query_parts.append(f"{quote(str(key))}={quote(str(value))}")
             if query_parts:
-                target += "?" + "&".join(query_parts)
+                query_suffix = "?" + "&".join(query_parts)
         body = None
         if method in {"POST", "PUT", "PATCH"}:
             length = int(self.headers.get("Content-Length", "0") or "0")
@@ -3869,24 +3893,26 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                 body = rewrite_jellyseerr_jellyfin_connect_body(
                     body, public_hosts=public_hosts, path=target_path
                 )
-        upstream = urlparse(base)
-        host_override = upstream.netloc
-        proxy_request = Request(target, data=body, method=method)
-        for header_name, header_value in select_upstream_request_headers(self.headers, app_id=app_id):
-            proxy_request.add_header(header_name, header_value)
-        cookie_header = filter_browser_cookies_for_upstream(self.headers.get("Cookie", ""))
-        if cookie_header:
-            proxy_request.add_header("Cookie", cookie_header)
-        proxy_request.add_header("Host", host_override)
-        proxy_request.add_header("Accept-Encoding", "identity")
-        if is_transfer_proxy_app(app_id):
-            for header_name, header_value in transfer_loopback_headers(base).items():
-                proxy_request.add_header(header_name, header_value)
-        else:
-            proxy_request.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
-            proxy_request.add_header("X-Forwarded-Proto", "http")
-        if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"} | TRANSFER_PROXY_APP_IDS:
-            proxy_request.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
+
+        def build_upstream_request(active_base: str) -> Request:
+            req = Request(active_base.rstrip("/") + target_path + query_suffix, data=body, method=method)
+            for header_name, header_value in select_upstream_request_headers(self.headers, app_id=app_id):
+                req.add_header(header_name, header_value)
+            cookie_header = filter_browser_cookies_for_upstream(self.headers.get("Cookie", ""))
+            if cookie_header:
+                req.add_header("Cookie", cookie_header)
+            req.add_header("Host", urlparse(active_base).netloc)
+            req.add_header("Accept-Encoding", "identity")
+            if is_transfer_proxy_app(app_id):
+                for header_name, header_value in transfer_loopback_headers(active_base).items():
+                    req.add_header(header_name, header_value)
+            elif app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"}:
+                req.add_header("X-Forwarded-Host", self.headers.get("Host", ""))
+                req.add_header("X-Forwarded-Proto", "http")
+            if app_id not in {"jellyseerr", "jellyfin", "ragnar", "pwnagotchi"} | TRANSFER_PROXY_APP_IDS:
+                req.add_header("X-Forwarded-Prefix", f"/proxy/{app_id}")
+            return req
+
         if is_transfer_proxy_app(app_id):
             self._ensure_transfer_stack_starting(app_id=app_id)
         elif app_id in MEDIA_STACK_APPS:
@@ -3896,13 +3922,15 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
         deadline = time.time() + retry_seconds
         last_url_error: BaseException | None = None
         while True:
+            active_base = self.proxy_base_for_app(app_id) or base
+            proxy_request = build_upstream_request(active_base)
             try:
                 with PROXY_OPENER.open(proxy_request, timeout=proxy_timeout) as response:
                     payload = decode_upstream_payload(response.read(), response.headers)
                     headers, set_cookies = proxied_response_headers(
                         response.headers,
                         app_id,
-                        base,
+                        active_base,
                         public_hosts=public_hosts,
                         keep_auth_challenge=is_transfer_proxy_app(app_id),
                     )
@@ -3918,11 +3946,22 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
                     )
                     return
             except HTTPError as exc:
+                if (
+                    exc.code in {502, 503, 504}
+                    and is_media_health_endpoint(target_path)
+                    and time.time() < deadline
+                ):
+                    try:
+                        exc.read()
+                    except Exception:
+                        pass
+                    time.sleep(0.45)
+                    continue
                 payload = decode_upstream_payload(exc.read(), exc.headers)
                 headers, set_cookies = proxied_response_headers(
                     exc.headers,
                     app_id,
-                    base,
+                    active_base,
                     public_hosts=public_hosts,
                     keep_auth_challenge=is_transfer_proxy_app(app_id),
                 )
