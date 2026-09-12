@@ -235,6 +235,10 @@ def rewrite_jellyfin_system_info(
         return payload
     if not isinstance(data, dict):
         return payload
+    version = data.get("Version") or data.get("version")
+    if not version:
+        return payload
+    data["Version"] = version
     advertised = origin + proxy_prefix("jellyfin")
     for key in ("LocalAddress", "WanAddress", "Address"):
         if data.get(key):
@@ -356,39 +360,15 @@ def proxy_bridge_js(app_id: str) -> str:
         "if(f)window.fetch=function(i,n){"
         "if(typeof i==='string'||(typeof URL!=='undefined'&&i instanceof URL)"
         "||(typeof Request!=='undefined'&&i instanceof Request))i=rewrite(i);"
-        "function urlOf(){try{return typeof i==='string'?i:(i&&i.url)||'';}catch(e){return '';}}"
-        "function pinInfo(r){"
-        "var u=urlOf();"
-        "if(!r||!r.ok||!/initialize\\.json|\\/System\\/Info/i.test(String(u)))return r;"
+        "return f.call(this,i,n).then(function(r){"
+        "var u='';try{u=typeof i==='string'?i:(i&&i.url)||'';}catch(e){}"
+        "if(!/initialize\\.json/i.test(String(u)))return r;"
         "return r.clone().text().then(function(t){"
         "try{var data=JSON.parse(t);pin(data);"
-        "var origin=location.origin+p;"
-        "if(data&&typeof data==='object'){if(data.LocalAddress)data.LocalAddress=origin;"
-        "if(data.WanAddress)data.WanAddress=origin;if(data.Address)data.Address=origin;}"
         "return new Response(JSON.stringify(data),{status:r.status,statusText:r.statusText,headers:r.headers});}"
-        "catch(e){return r;}});}"
-        "function once(){return f.call(window,i,n);}"
-        "if(!/\\/System\\/Info/i.test(String(urlOf())))return once().then(pinInfo);"
-        "var start=Date.now();"
-        "function wait(ms){return new Promise(function(res){setTimeout(res,ms);});}"
-        "function loop(){return once().then(function(r){"
-        "if(r&&r.ok)return pinInfo(r);"
-        "if(Date.now()-start>90000)return r;"
-        "return wait(1200).then(loop);"
-        "}).catch(function(e){"
-        "if(Date.now()-start>90000)throw e;"
-        "return wait(1200).then(loop);"
-        "});}"
-        "return loop();};"
+        "catch(e){return r;}});});};"
         "var o=XMLHttpRequest.prototype.open;"
-        "var snd=XMLHttpRequest.prototype.send;"
-        "XMLHttpRequest.prototype.open=function(m,u){"
-        "arguments[1]=rewrite(u);"
-        "try{this.__rockyUrl=String(arguments[1]||'');}catch(e){this.__rockyUrl='';}"
-        "return o.apply(this,arguments);};"
-        "XMLHttpRequest.prototype.send=function(){"
-        "try{if(/\\/System\\/Info/i.test(String(this.__rockyUrl||'')))this.timeout=0;}catch(e){}"
-        "return snd.apply(this,arguments);};"
+        "XMLHttpRequest.prototype.open=function(m,u){arguments[1]=rewrite(u);return o.apply(this,arguments);};"
         "if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,pr){"
         "return pr===undefined?new W(rewrite(u)):new W(rewrite(u),pr);};window.WebSocket.prototype=W.prototype;}"
         "if(p==='/proxy/jellyseerr'){function setv(el,val){if(!el)return;"
@@ -703,7 +683,7 @@ _JELLYFIN_REST_ROOTS = frozenset(
     }
 )
 _DEFAULT_PROXY_RETRY_SECONDS = 1.8
-_HEALTH_PROXY_RETRY_SECONDS = 45.0
+_HEALTH_PROXY_RETRY_SECONDS = 15.0
 _DOCUMENT_WAIT_PATHS = frozenset({"/", "/index.html", "/login"})
 
 
