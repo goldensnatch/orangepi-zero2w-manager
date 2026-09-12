@@ -60,6 +60,18 @@ _CONSOLE_PATH_PREFIXES = (
     "/api/storage",
     "/api/audit",
     "/api/apps",
+    "/favicon.ico",
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
+    "/robots.txt",
+)
+_CONSOLE_CHROME_NAMES = frozenset(
+    {
+        "favicon.ico",
+        "apple-touch-icon.png",
+        "apple-touch-icon-precomposed.png",
+        "robots.txt",
+    }
 )
 _APP_LOGIN_QUERY_KEYS = {"returnurl", "return_url", "returnto"}
 _CSP_HEADERS = {"content-security-policy", "content-security-policy-report-only", "x-webkit-csp"}
@@ -105,9 +117,24 @@ def proxy_app_id_from_path(path: str) -> str | None:
     return None
 
 
+def is_console_chrome_path(path: str) -> bool:
+    """Origin-root browser chrome such as /favicon.ico — never a media proxy target."""
+    resource = str(path or "").split("?", 1)[0]
+    if not resource.startswith("/"):
+        resource = "/" + resource
+    if resource.count("/") != 1:
+        return False
+    name = resource.rsplit("/", 1)[-1].lower()
+    if name in _CONSOLE_CHROME_NAMES:
+        return True
+    return name.startswith("apple-touch-icon")
+
+
 def is_rocky_console_request(path: str) -> bool:
     normalized = str(path or "/") or "/"
     if normalized in {"/", "/login"}:
+        return True
+    if is_console_chrome_path(normalized):
         return True
     return _is_rocky_console_path(normalized)
 
@@ -132,7 +159,12 @@ def leaked_proxy_app_id(
     referer: str = "",
     last_app_id: str = "",
 ) -> str | None:
-    """Map a root-relative app request (e.g. /initialize.json) back to /proxy/<app>/."""
+    """Map a root-relative app request (e.g. /initialize.json) back to /proxy/<app>/.
+
+    Console routes (`/`, `/apps`, `/login`, `/favicon.ico`) must never follow
+    rocky_last_proxy_app or a /proxy/<app>/ Referer. Distinctive Jellyseerr
+    prefixes still pin to jellyseerr so `/api/v1/auth*` is not sent to Jellyfin.
+    """
     if str(path or "").startswith("/proxy/") or is_rocky_console_request(path):
         return None
     normalized = str(path or "")
@@ -230,7 +262,8 @@ def proxy_bridge_js(app_id: str) -> str:
         "}}catch(e){}"
         "function skip(path){"
         "var s=['/apps','/logs','/files','/view','/download','/api/runtime','/api/security',"
-        "'/api/mode','/api/network','/api/transfer','/api/storage','/api/audit','/api/apps'];"
+        "'/api/mode','/api/network','/api/transfer','/api/storage','/api/audit','/api/apps',"
+        "'/favicon.ico','/apple-touch-icon.png','/apple-touch-icon-precomposed.png','/robots.txt'];"
         "for(var i=0;i<s.length;i++){if(path===s[i]||path.indexOf(s[i]+'/')===0)return true;}"
         "return false;}"
         "function rewrite(u){"
@@ -751,6 +784,7 @@ def upstream_starting_page(app_id: str) -> bytes:
     return (
         "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta http-equiv=\"refresh\" content=\"2\">"
+        "<link rel=\"icon\" href=\"/favicon.ico\">"
         f"<title>Starting {name}</title>"
         "<style>body{font-family:system-ui,sans-serif;background:#111;color:#eee;"
         "display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}"

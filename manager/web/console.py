@@ -52,6 +52,7 @@ from manager.runtime.app_proxy import (
     LAST_PROXY_APP_COOKIE,
     decode_upstream_payload,
     filter_browser_cookies_for_upstream,
+    is_console_chrome_path,
     is_proxy_bridge_path,
     is_public_proxy_app,
     is_upstream_unavailable,
@@ -115,6 +116,12 @@ _TRANSFER_ENSURE_LOCK = threading.Lock()
 _TRANSFER_ENSURE_AT = 0.0
 _MEDIA_ENSURE_LOCK = threading.Lock()
 _MEDIA_ENSURE_AT: dict[str, float] = {}
+_CONSOLE_FAVICON_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    b'<rect width="32" height="32" rx="6" fill="#060a0f"/>'
+    b'<circle cx="16" cy="16" r="8" fill="#00d4ff"/>'
+    b"</svg>"
+)
 
 
 def _env_credential(name: str, default: str = "") -> str:
@@ -904,6 +911,7 @@ def page(title: str, body: str) -> bytes:
 <meta name="rocky-csrf-token" content="{html.escape(CSRF_TOKEN)}">
 
 <title>{html.escape(title)} - Rocky</title>
+<link rel="icon" href="/favicon.ico">
 
 <style>
 
@@ -1847,6 +1855,29 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
             return None
         return str(morsel.value or "")
 
+    def _serve_console_chrome(self, path: str, *, head_only: bool = False) -> bool:
+        """Serve Rocky /favicon.ico (or 404 other chrome) without proxying to media apps."""
+        if not is_console_chrome_path(path):
+            return False
+        resource = str(path or "").split("?", 1)[0].lower()
+        if resource == "/favicon.ico":
+            payload = _CONSOLE_FAVICON_SVG
+            content_type = "image/svg+xml"
+            status = HTTPStatus.OK
+        else:
+            payload = b""
+            content_type = "text/plain; charset=utf-8"
+            status = HTTPStatus.NOT_FOUND
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self._send_security_headers()
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(payload)
+        return True
+
     def _session_authorized(self) -> bool:
         token = self._cookie(SESSION_COOKIE_NAME)
         return bool(token) and check_proxy_token(token, SESSION_APP_ID)
@@ -2441,6 +2472,9 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
         request = urlparse(self.path)
 
+        if self._serve_console_chrome(request.path):
+            return
+
         if request.path.startswith("/proxy/"):
 
             self.handle_proxy(request, method="GET")
@@ -2747,6 +2781,8 @@ class RockyConsoleHandler(BaseHTTPRequestHandler):
 
     def _dispatch_app_proxy(self, method: str) -> None:
         request = urlparse(self.path)
+        if method == "HEAD" and self._serve_console_chrome(request.path, head_only=True):
+            return
         if request.path.startswith("/proxy/"):
             self.handle_proxy(request, method=method)
             return

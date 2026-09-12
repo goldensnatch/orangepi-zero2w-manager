@@ -555,6 +555,18 @@ class MediaStackTests(unittest.TestCase):
                 last_app_id="jellyfin",
             )
         )
+        jellyseerr_wait_referer = (
+            "http://192.168.1.213:8090/proxy/jellyseerr/?access_token=abc"
+        )
+        for console_path in ("/favicon.ico", "/apps", "/login", "/"):
+            self.assertIsNone(
+                leaked_proxy_app_id(
+                    path=console_path,
+                    referer=jellyseerr_wait_referer,
+                    last_app_id="jellyseerr",
+                ),
+                f"{console_path} must not proxy into jellyseerr",
+            )
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
         proxy_fn = source.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
         self.assertIn("is_public_proxy_app(app_id)", proxy_fn)
@@ -887,6 +899,74 @@ class MediaStackTests(unittest.TestCase):
         ensure_at, _, retry_loop = proxy_fn.partition("deadline = time.time() + retry_seconds")
         self.assertIn("_ensure_media_app_starting", ensure_at)
         self.assertNotIn("_ensure_media_app_starting", retry_loop)
+
+    def test_console_favicon_never_proxies_into_media_apps(self) -> None:
+        from manager.runtime.app_proxy import (
+            is_console_chrome_path,
+            is_rocky_console_request,
+            leaked_proxy_app_id,
+            proxy_bridge_js,
+            upstream_starting_page,
+            wants_upstream_wait_page,
+        )
+
+        html_accept = "text/html,application/xhtml+xml"
+        wait_referer = "http://192.168.1.213:8090/proxy/jellyseerr/?access_token=tok"
+        for path in ("/favicon.ico", "/apps", "/login", "/"):
+            self.assertTrue(is_rocky_console_request(path), path)
+            self.assertIsNone(
+                leaked_proxy_app_id(
+                    path=path,
+                    referer=wait_referer,
+                    last_app_id="jellyseerr",
+                ),
+                path,
+            )
+            self.assertIsNone(
+                leaked_proxy_app_id(
+                    path=path,
+                    referer="http://192.168.1.213:8090/proxy/jellyfin/web/",
+                    last_app_id="jellyfin",
+                ),
+                path,
+            )
+        self.assertTrue(is_console_chrome_path("/favicon.ico"))
+        self.assertTrue(is_console_chrome_path("/apple-touch-icon.png"))
+        self.assertFalse(is_console_chrome_path("/api/v1/auth/me"))
+        self.assertEqual(
+            leaked_proxy_app_id(
+                path="/api/v1/auth/me",
+                referer="",
+                last_app_id="jellyfin",
+            ),
+            "jellyseerr",
+        )
+        self.assertTrue(
+            wants_upstream_wait_page("GET", "/", html_accept, "jellyseerr")
+        )
+        self.assertFalse(
+            wants_upstream_wait_page("GET", "/favicon.ico", "*/*", "jellyseerr")
+        )
+        wait_html = upstream_starting_page("jellyseerr")
+        self.assertIn(b'rel="icon"', wait_html)
+        self.assertIn(b'href="/favicon.ico"', wait_html)
+        self.assertIn(b"Starting Jellyseerr", wait_html)
+        bridge = proxy_bridge_js("jellyseerr")
+        self.assertIn("'/favicon.ico'", bridge)
+        console_src = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
+        get_fn = console_src.split("def _handle_get", 1)[1].split("def do_POST", 1)[0]
+        before_leak, _, after_leak = get_fn.partition("_leaked_proxy_request")
+        self.assertIn("_serve_console_chrome", before_leak)
+        self.assertNotIn("handle_proxy(leaked", before_leak)
+        self.assertIn("handle_proxy(leaked", after_leak)
+        self.assertIn('rel="icon" href="/favicon.ico"', console_src)
+        proxy_fn = console_src.split("def handle_proxy", 1)[1].split("def handle_apps", 1)[0]
+        ensure_at, _, retry_loop = proxy_fn.partition("deadline = time.time() + retry_seconds")
+        self.assertIn("_ensure_media_app_starting", ensure_at)
+        self.assertIn("write_launch_request", console_src.split("def _ensure_media_app_starting", 1)[1].split("def _launch_transfer_stack", 1)[0])
+        self.assertNotIn("_ensure_media_app_starting", retry_loop)
+        self.assertIn("upstream_unavailable_error_response", proxy_fn)
+        self.assertIn("wants_upstream_wait_page", proxy_fn)
 
     def test_apps_launch_stays_on_console_and_opens_new_tab(self) -> None:
         source = (ROOT / "manager" / "web" / "console.py").read_text(encoding="utf-8")
